@@ -31,7 +31,7 @@ git clone https://github.com/aiechoic/claude-worker-kit "$env:USERPROFILE\.claud
 
 Then ask, for example, "restore worker 3 from its state repo" or "rebuild worker 3 on a new image". The `team-setup` skill picks the case and runs the scripts step by step. When a step needs you, it stops and tells you what to do. Those steps are logging in, pasting a secret, creating a bot, and forwarding a public key.
 
-Requirements: Node 20+, git, OpenSSH, and the official [age](https://github.com/FiloSottile/age) tool (1.1 or later; `winget install FiloSottile.age`, `apt install age`) for sealed credentials. The scripts have no npm dependencies. You also need lark-cli (`npm install -g @larksuite/cli`), the GitHub CLI `gh` on the leader's machine, and docker on the host for docker workers.
+Requirements: Node 20+, git, OpenSSH, and the official [age](https://github.com/FiloSottile/age) tool (1.1 or later; `winget install FiloSottile.age` and then a new terminal, or `apt install age`) for sealed credentials. The scripts have no npm dependencies. You also need lark-cli (`npm install -g @larksuite/cli`), the GitHub CLI `gh` on the leader's machine, and docker on the host for docker workers.
 
 ## How it fits together
 

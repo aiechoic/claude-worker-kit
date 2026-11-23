@@ -56,7 +56,15 @@ function machine(root, name, recipient, stateClone) {
   }
 }
 
-function setup() {
+/** The member's state clone as a git repository, so seal / unseal keep their record in its .git. */
+function gitInit(m) {
+  const clone = dirname(m.state)
+  mkdirSync(clone, { recursive: true })
+  assert.equal(sh('git', ['init', '-q', clone]).status, 0)
+  return clone
+}
+
+function setup({ git = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'cwk-secrets-'))
   const keyFile = join(root, 'master.key')
   const kg = sh(process.execPath, [SECRETS, 'keygen', '--out', keyFile])
@@ -68,12 +76,14 @@ function setup() {
   mkdirSync(join(a.creds, 'nested'), { recursive: true })
   writeFileSync(a.appSecret, APP_SECRET)
   writeFileSync(a.modelKey, MODEL_KEY)
+  if (git) gitInit(a)
   return { root, keyFile, recipient, a }
 }
 
 /** A new machine: the sealed files arrive with the state repo, the credentials are not there yet. */
 function newMachine(s, name = 'b') {
   const b = machine(s.root, name, s.recipient)
+  gitInit(b)
   cpSync(join(s.a.state, 'secrets'), join(b.state, 'secrets'), { recursive: true })
   return b
 }
@@ -112,7 +122,15 @@ test('seal on one machine, unseal on a new one: byte for byte, mode 600, master 
   assert.equal(rc.status, 0, rc.stderr + rc.stdout)
   assert.deepEqual(readFileSync(d.appSecret), APP_SECRET)
 
-  // unsealed files count as unchanged for the next seal
+  // PowerShell's Get-Clipboard | node … puts a UTF-8 BOM in front
+  const e = newMachine(s, 'e')
+  const rb = e.secrets(['unseal', '--identity', '-'], { input: Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(`${line}\r\n`)]) })
+  assert.equal(rb.status, 0, rb.stderr + rb.stdout)
+  assert.deepEqual(readFileSync(e.modelKey), MODEL_KEY)
+
+  // unsealed files count as unchanged for the next seal, whatever the file times say
+  const past = new Date(Date.now() - 60_000)
+  utimesSync(join(b.state, 'secrets', 'model.age'), past, past)
   const again = b.secrets(['seal'])
   assert.equal(again.status, 0)
   assert.match(again.stdout, /unchanged since the last seal: app-secret, model/)
@@ -164,9 +182,10 @@ test('status and seal name credentials but never show them; seal skips unchanged
   const second = s.a.secrets(['seal'])
   assert.match(second.stdout, /unchanged since the last seal: app-secret, model/)
   const old = readFileSync(join(s.a.state, 'secrets', 'model.age'))
-  const later = new Date(Date.now() + 5000)
+  // a changed credential is sealed again even when its time is older than the .age
   writeFileSync(s.a.modelKey, 'model-key-example-rotated')
-  utimesSync(s.a.modelKey, later, later)
+  const past = new Date(Date.now() - 60_000)
+  utimesSync(s.a.modelKey, past, past)
   const third = s.a.secrets(['seal'])
   assert.match(third.stdout, /sealed: model/)
   assert.match(third.stdout, /unchanged since the last seal: app-secret/)
@@ -213,8 +232,8 @@ test('bad team file entries are refused before anything runs; a dot file gets an
   assert.match(bad.stderr, /secretsRecipient must be an age public key/)
 })
 
-test('state.mjs save seals changed credentials and commits them; restore elsewhere points at unseal', { skip: skip || (win && 'state round trip is covered on Linux') }, () => {
-  const s = setup()
+test('state.mjs save seals changed credentials and commits them with *.age binary; restore elsewhere points at unseal; the next save adds nothing', { skip: skip || (win && 'state round trip is covered on Linux') }, () => {
+  const s = setup({ git: false })
   const bare = join(s.root, 'remote.git')
   sh('git', ['init', '-q', '--bare', '-b', 'main', bare])
   const seed = join(s.root, 'seed')
@@ -231,6 +250,10 @@ test('state.mjs save seals changed credentials and commits them; restore elsewhe
   const files = sh('git', ['-C', join(s.root, 'a', 'state'), 'ls-files']).stdout
   assert.match(files, /worker-7\/secrets\/app-secret\.age/)
   assert.match(files, /worker-7\/secrets\/model\.age/)
+  assert.match(files, /^\.gitattributes$/m)
+  assert.match(readFileSync(join(s.root, 'a', 'state', '.gitattributes'), 'utf8'), /^\*\.age binary$/m)
+  const attr = sh('git', ['-C', join(s.root, 'a', 'state'), 'check-attr', 'binary', 'worker-7/secrets/model.age']).stdout
+  assert.match(attr, /binary: set/)
 
   const b = machine(s.root, 'b', s.recipient)
   const restored = b.stateCmd(['restore'])
@@ -241,6 +264,41 @@ test('state.mjs save seals changed credentials and commits them; restore elsewhe
   const r = b.secrets(['unseal', '--identity', '-'], { input: readFileSync(s.keyFile) })
   assert.equal(r.status, 0, r.stderr)
   assert.deepEqual(readFileSync(b.modelKey), MODEL_KEY)
+
+  // the new machine's first save seals nothing and commits nothing
+  const head = sh('git', ['-C', join(s.root, 'b', 'state'), 'rev-parse', 'HEAD']).stdout
+  const bSaved = b.stateCmd(['save', '-m', 'first save'])
+  assert.equal(bSaved.status, 0, bSaved.stderr + bSaved.stdout)
+  assert.doesNotMatch(bSaved.stdout, /sealed:/)
+  assert.equal(sh('git', ['-C', join(s.root, 'b', 'state'), 'rev-parse', 'HEAD']).stdout, head)
+})
+
+test('seal does not overwrite a .age this clone did not seal, or a newer one sealed on another machine, unless --force', { skip }, () => {
+  const s = setup()
+  assert.equal(s.a.secrets(['seal']).status, 0)
+
+  // b got the same credentials by hand, not by unseal: the .age in the repo is not this clone's
+  const b = newMachine(s)
+  mkdirSync(join(b.creds, 'nested'), { recursive: true })
+  writeFileSync(b.appSecret, APP_SECRET)
+  writeFileSync(b.modelKey, MODEL_KEY)
+  const before = readFileSync(join(b.state, 'secrets', 'model.age'))
+  const foreign = b.secrets(['seal'])
+  assert.equal(foreign.status, 0, foreign.stderr)
+  assert.match(foreign.stdout, /already sealed, but not by this clone: app-secret, model/)
+  assert.ok(readFileSync(join(b.state, 'secrets', 'model.age')).equals(before))
+  assert.match(b.secrets(['seal', '--force']).stdout, /sealed: app-secret, model/)
+
+  // c unsealed; then a rotates the model key and seals; c pulls that .age: c's unchanged copy does not win
+  const c = newMachine(s, 'c')
+  assert.equal(c.secrets(['unseal', '--identity', '-'], { input: readFileSync(s.keyFile) }).status, 0)
+  writeFileSync(s.a.modelKey, 'model-key-example-rotated')
+  assert.match(s.a.secrets(['seal']).stdout, /sealed: model/)
+  cpSync(join(s.a.state, 'secrets', 'model.age'), join(c.state, 'secrets', 'model.age'))
+  const elsewhere = c.secrets(['seal'])
+  assert.match(elsewhere.stdout, /sealed again on another machine, local copy unchanged: model/)
+  assert.match(elsewhere.stdout, /unchanged since the last seal: app-secret/)
+  assert.ok(readFileSync(join(c.state, 'secrets', 'model.age')).equals(readFileSync(join(s.a.state, 'secrets', 'model.age'))))
 })
 
 test('check-public flags an age master key and a committed .age file', () => {

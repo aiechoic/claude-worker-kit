@@ -1,10 +1,13 @@
 // Sealed credentials: each `secrets` entry marked `sealed: true` is kept in the member's state directory as
 // `secrets/<id>.age`, encrypted with the official age tool to the team's public key (`secretsRecipient`).
 // Sealing needs only the public key; unsealing needs the master key, which the user keeps and hands over once.
-// Nothing here reads a credential into this process except unseal, which holds the decrypted bytes in memory
-// until every file has decrypted, then writes them. The master key never goes to a file, an argument or the environment.
+// unseal holds the decrypted bytes in memory until every file has decrypted, then writes them; seal hashes the local
+// credential to see whether it changed. The master key never goes to a file, an argument or the environment.
+// What was last sealed or unsealed here is recorded per clone in <state clone>/.git/worker-kit-sealed.json
+// (SHA-256 of the credential and of its .age file); it never leaves this machine.
 import { spawnSync } from 'node:child_process'
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync, writeSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { absPath, isWin, secretsOf, stateDir } from './team.mjs'
 
@@ -39,6 +42,46 @@ export function sealedEntries(r) {
   return out
 }
 
+/** Where seal / unseal keep their record: the state clone's root and, when it is a git clone, the marker file. */
+export function sealPlace(r) {
+  const root = absPath(r.stateClone)
+  let git = false
+  try { git = statSync(join(root, '.git')).isDirectory() } catch {}
+  return { root, marker: git ? join(root, '.git', 'worker-kit-sealed.json') : null }
+}
+
+const sha256 = buf => createHash('sha256').update(buf).digest('hex')
+
+function fileHash(f) {
+  const b = readFileSync(f)
+  try { return sha256(b) } finally { b.fill(0) }
+}
+
+function readMarker(place) {
+  if (!place?.marker || !existsSync(place.marker)) return {}
+  try { return JSON.parse(readFileSync(place.marker, 'utf8')) } catch { return {} }
+}
+
+function writeMarker(place, m) {
+  if (!place?.marker) return
+  const tmp = tmpName(place.marker)
+  writeFileSync(tmp, `${JSON.stringify(m, null, 2)}\n`)
+  renameSync(tmp, place.marker)
+}
+
+/**
+ * Make git treat .age files as binary in the state repo (`*.age binary` in the root .gitattributes), so no
+ * line-ending conversion (core.autocrlf) ever touches them. Returns true when the file was changed.
+ */
+export function ensureBinaryAttr(root) {
+  if (!root || !existsSync(join(root, '.git'))) return false
+  const f = join(root, '.gitattributes')
+  const cur = existsSync(f) ? readFileSync(f, 'utf8') : ''
+  if (/^\*\.age\s+binary\s*$/m.test(cur)) return false
+  appendFileSync(f, `${cur && !cur.endsWith('\n') ? '\n' : ''}*.age binary\n`)
+  return true
+}
+
 /** age's version, or null when the age binaries are not installed. */
 export function ageVersion() {
   const a = spawnSync(AGE, ['--version'], { encoding: 'utf8' })
@@ -49,7 +92,7 @@ export function ageVersion() {
 
 export function ageInstallHint() {
   return isWin
-    ? ['Install the official age tool, then open a new terminal so PATH picks it up:', '  winget install FiloSottile.age']
+    ? ['Install the official age tool:', '  winget install FiloSottile.age', 'A terminal or session that was already running does not see it on PATH: open a new terminal, and restart the session (team-claude) if the session runs this script.']
     : ['Install the official age tool (1.1 or later):', '  sudo apt install age        # Debian / Ubuntu', '  or download a release from https://github.com/FiloSottile/age/releases and put age and age-keygen on PATH']
 }
 
@@ -62,15 +105,26 @@ function removeQuietly(f) {
 }
 
 /**
- * Encrypt each sealed entry whose local file exists into the state repo.
- * An entry is skipped when its .age is newer than the local file (unchanged since the last seal or unseal), unless force.
- * @returns {{ sealed: string[], unchanged: string[], missing: string[] }} ids
+ * Encrypt each sealed entry whose local file exists into the state repo, judged by content against what this clone
+ * last sealed or unsealed (the marker), never by file times. Without force an entry is skipped when:
+ * - unchanged: the credential and its .age are what this clone last sealed or unsealed;
+ * - elsewhere: the credential is unchanged here but the .age changed (another machine sealed a newer one; unseal to take it);
+ * - foreign: a .age exists that this clone never sealed or unsealed (force to replace it with this machine's copy).
+ * @param place from sealPlace(r); adds `*.age binary` to the repo's .gitattributes when needed
+ * @returns {{ sealed: string[], unchanged: string[], elsewhere: string[], foreign: string[], missing: string[], attributes: boolean }}
  */
-export function seal(entries, recipient, { force = false, dry = false } = {}) {
-  const res = { sealed: [], unchanged: [], missing: [] }
+export function seal(entries, recipient, { force = false, dry = false, place = null } = {}) {
+  const res = { sealed: [], unchanged: [], elsewhere: [], foreign: [], missing: [], attributes: false }
+  const marker = readMarker(place)
   for (const e of entries) {
     if (!existsSync(e.path) || statSync(e.path).size === 0) { res.missing.push(e.id); continue }
-    if (!force && existsSync(e.file) && statSync(e.file).mtimeMs >= statSync(e.path).mtimeMs) { res.unchanged.push(e.id); continue }
+    const plain = fileHash(e.path)
+    const m = marker[e.id]
+    if (!force && existsSync(e.file)) {
+      const age = fileHash(e.file)
+      if (!m) { res.foreign.push(e.id); continue }
+      if (m.plain === plain) { (m.age === age ? res.unchanged : res.elsewhere).push(e.id); continue }
+    }
     if (dry) { res.sealed.push(e.id); continue }
     mkdirSync(dirname(e.file), { recursive: true })
     const tmp = tmpName(e.file)
@@ -83,7 +137,12 @@ export function seal(entries, recipient, { force = false, dry = false } = {}) {
     } finally {
       removeQuietly(tmp)
     }
+    marker[e.id] = { plain, age: fileHash(e.file) }
     res.sealed.push(e.id)
+  }
+  if (!dry && res.sealed.length) {
+    writeMarker(place, marker)
+    res.attributes = ensureBinaryAttr(place?.root)
   }
   return res
 }
@@ -96,14 +155,16 @@ export function seal(entries, recipient, { force = false, dry = false } = {}) {
  * @param {Buffer} identity the master key (an age identity file's contents); zeroed before returning
  * @returns {{ written: string[], same: string[], kept: string[], notSealed: string[] }} ids
  */
-export function unseal(entries, identity, { force = false, dry = false } = {}) {
+export function unseal(entries, identity, { force = false, dry = false, place = null } = {}) {
   const res = { written: [], same: [], kept: [], notSealed: [] }
   const plain = []
   const tmps = []
+  const marker = readMarker(place)
   let key = Buffer.alloc(0)
   try {
-    // a key copied from a password manager may carry spaces or CR LF, which age rejects: keep the key lines, trimmed
-    const lines = identity.toString('latin1').split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'))
+    // a key copied from a password manager may carry spaces or CR LF, which age rejects, and PowerShell puts a
+    // UTF-8 BOM in front of what it pipes into a native program: keep the key lines, trimmed
+    const lines = identity.toString('latin1').replace(/^\xEF\xBB\xBF/, '').split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'))
     if (!lines.length || !lines.every(l => /^AGE-SECRET-KEY-1[0-9A-Z]+$/.test(l))) throw new Error('the master key is not an age identity (AGE-SECRET-KEY-1…)')
     key = Buffer.from(`${lines.join('\n')}\n`, 'latin1')
     for (const e of entries) {
@@ -122,7 +183,7 @@ export function unseal(entries, identity, { force = false, dry = false } = {}) {
         const cur = readFileSync(e.path)
         const same = cur.equals(data)
         cur.fill(0)
-        if (same) { res.same.push(e.id); continue }
+        if (same) { marker[e.id] = { plain: sha256(data), age: fileHash(e.file) }; res.same.push(e.id); continue }
         if (!force) { res.kept.push(e.id); continue }
       }
       if (dry) { res.written.push(e.id); continue }
@@ -132,11 +193,11 @@ export function unseal(entries, identity, { force = false, dry = false } = {}) {
       const fd = openSync(tmp, 'wx', 0o600)
       try { writeSync(fd, data) } finally { closeSync(fd) }
       renameSync(tmp, e.path)
-      // the .age is now newer than the file, so the next seal sees it as unchanged
-      const now = new Date()
-      try { utimesSync(e.file, now, now) } catch {}
+      // recorded, so the next seal sees the credential as unchanged
+      marker[e.id] = { plain: sha256(data), age: fileHash(e.file) }
       res.written.push(e.id)
     }
+    if (!dry) writeMarker(place, marker)
     return res
   } finally {
     identity.fill(0)

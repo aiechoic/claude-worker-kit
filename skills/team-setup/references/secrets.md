@@ -13,7 +13,7 @@ A member's credentials can travel in its private state repo, encrypted with the 
 
 `secrets.mjs` exits 10 with these lines when age is missing 🖐:
 
-- Windows: `winget install FiloSottile.age`, then open a new terminal.
+- Windows: `winget install FiloSottile.age`. A terminal or Claude Code session that was already running does not see it on PATH: open a new terminal, and restart the session (`team-claude`) if the session runs the scripts.
 - Debian / Ubuntu (docker workers: in the image or the init hook): `apt install age`.
 - Elsewhere: an official release from GitHub, with `age` and `age-keygen` on PATH.
 
@@ -32,9 +32,17 @@ Version 1.1 or later (it reads the master key from stdin).
 
 Sealing needs only the public key, so each member does it for itself:
 
-- `state.mjs save` seals every sealed credential whose file changed since its last seal, then commits.
+- `state.mjs save` seals every sealed credential that changed since this clone last sealed or unsealed it, then commits. It also commits the repo's `.gitattributes`.
 - `node "$KIT/scripts/secrets.mjs" seal A` does it by hand; `--force` seals again even if nothing changed.
 - `node "$KIT/scripts/secrets.mjs" status A` lists each sealed credential: local file present or missing, sealed in the repo or not yet. It never opens either file.
+
+How seal decides, by content and never by file times:
+
+- Each clone records, in `<state clone>/.git/worker-kit-sealed.json`, the SHA-256 of each credential and of its `.age` as it last sealed or unsealed them. The record stays on this machine.
+- A credential whose content changed here is sealed again.
+- A credential unchanged here whose `.age` changed (another machine sealed a newer one) is not sealed over it. Unseal to take the newer one; `--force` seals this machine's copy over it.
+- A `.age` this clone never sealed or unsealed (the credential was filled by hand) is left alone, for the same reason. Unseal, or `--force`.
+- Seal adds `*.age binary` to the state repo's root `.gitattributes`, so git never converts line endings in a sealed file (Git for Windows defaults to `core.autocrlf=true`).
 
 ## Unseal on a new machine (restore)
 

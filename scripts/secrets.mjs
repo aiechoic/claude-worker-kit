@@ -15,7 +15,7 @@
  * `state.mjs save` seals changed credentials before committing; commit with `state.mjs save` after a manual seal.
  */
 import { readFileSync } from 'node:fs'
-import { ageInstallHint, ageVersion, keygen, recipientOf, seal, sealedEntries, statusOf, unseal } from './lib/secrets.mjs'
+import { ageInstallHint, ageVersion, keygen, recipientOf, seal, sealedEntries, sealPlace, statusOf, unseal } from './lib/secrets.mjs'
 import { absPath, die, info, needUser, ok, parseArgs, roleFromArgs, warn } from './lib/team.mjs'
 
 const args = parseArgs(process.argv.slice(2))
@@ -36,7 +36,7 @@ function load() {
     entries = sealedEntries(r)
     recipient = recipientOf(team, r)
   } catch (e) { die(e.message) }
-  return { r, entries, recipient }
+  return { r, entries, recipient, place: sealPlace(r) }
 }
 
 if (cmd === 'keygen') {
@@ -52,7 +52,7 @@ if (cmd === 'keygen') {
   process.exit(0)
 }
 
-const { r, entries, recipient } = load()
+const { entries, recipient, place } = load()
 if (cmd !== 'status' && entries.length === 0) {
   warn('no secrets entry has "sealed": true; nothing to do')
   process.exit(0)
@@ -72,9 +72,12 @@ switch (cmd) {
     if (!recipient) die('the team file has no "secretsRecipient" (the age public key to seal to); see secrets.mjs keygen')
     needAge()
     let res
-    try { res = seal(entries, recipient, { force, dry }) } catch (e) { die(e.message) }
+    try { res = seal(entries, recipient, { force, dry, place }) } catch (e) { die(e.message) }
     if (res.sealed.length) ok(`${dry ? 'would seal' : 'sealed'}: ${res.sealed.join(', ')}`)
+    if (res.attributes) ok('added "*.age binary" to the state repo\'s .gitattributes')
     if (res.unchanged.length) info(`unchanged since the last seal: ${res.unchanged.join(', ')} (--force to seal again)`)
+    if (res.elsewhere.length) warn(`sealed again on another machine, local copy unchanged: ${res.elsewhere.join(', ')} (unseal to take that one; --force to seal this one over it)`)
+    if (res.foreign.length) warn(`already sealed, but not by this clone: ${res.foreign.join(', ')} (unseal to take that one; --force to seal this machine's copy over it)`)
     if (res.missing.length) warn(`no local file yet, not sealed: ${res.missing.join(', ')}`)
     if (res.sealed.length && !dry) info('commit them with state.mjs save')
     break
@@ -85,7 +88,7 @@ switch (cmd) {
     let key
     try { key = args.identity === '-' || args.identity === true ? readFileSync(0) : readFileSync(absPath(args.identity)) } catch (e) { die(`cannot read the master key: ${e.code ?? e.message}`) }
     let res
-    try { res = unseal(entries, key, { force, dry }) } catch (e) { die(e.message) }
+    try { res = unseal(entries, key, { force, dry, place }) } catch (e) { die(e.message) }
     if (res.written.length) ok(`${dry ? 'would write' : 'written'}: ${res.written.join(', ')}`)
     if (res.same.length) info(`already in place: ${res.same.join(', ')}`)
     if (res.kept.length) warn(`a different file is already there, kept: ${res.kept.join(', ')} (--force to replace with the sealed one)`)

@@ -16,7 +16,7 @@ import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSy
 import { userInfo } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { applySave, listFiles, MARK, mirrorDir, readMarker, savePlan, unsavedLocal, writeMarker } from './lib/memsync.mjs'
-import { ageVersion, recipientOf, seal, sealedEntries } from './lib/secrets.mjs'
+import { ageVersion, recipientOf, seal, sealedEntries, sealPlace } from './lib/secrets.mjs'
 import { absPath, claudeProjectDir, die, git, info, isWin, needUser, ok, parseArgs, roleFilePath, roleFromArgs, secretsOf, sessionStatePath, thisHost, warn } from './lib/team.mjs'
 
 const args = parseArgs(process.argv.slice(2))
@@ -274,7 +274,9 @@ function save() {
   sealChanged()
   if (r.lock) refreshLock()
   const msg = typeof args.m === 'string' ? args.m : (args._[1] || 'state')
-  if (!commitAndPush([r.dir ?? '.'], msg)) process.exit(1)
+  // .gitattributes holds "*.age binary" (seal adds it), so it goes with the member's directory
+  const paths = [r.dir ?? '.', ...(existsSync(join(CLONE, '.gitattributes')) ? ['.gitattributes'] : [])]
+  if (!commitAndPush(paths, msg)) process.exit(1)
 }
 
 /** Seal credentials that changed since the last seal, so save carries them. A problem here warns; it does not stop the save. */
@@ -285,8 +287,10 @@ function sealChanged() {
   if (!recipient) { warn('sealed credentials skipped: the team file has no secretsRecipient'); return }
   if (!ageVersion()) { warn('sealed credentials skipped: age is not installed (see secrets.mjs)'); return }
   try {
-    const res = seal(entries, recipient, { dry })
+    const res = seal(entries, recipient, { dry, place: sealPlace(r) })
     if (res.sealed.length) ok(`sealed: ${res.sealed.join(', ')}`)
+    const other = [...res.elsewhere, ...res.foreign]
+    if (other.length) warn(`sealed elsewhere, not sealed again from here: ${other.join(', ')} (see secrets.mjs seal)`)
   } catch (e) { warn(`sealed credentials skipped: ${e.message}`) }
 }
 
