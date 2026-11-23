@@ -1,0 +1,9 @@
+{
+  "name": "worker-kit",
+  "version": "0.1.0",
+  "description": "Set up, restore, rebuild or roll back a leader + worker team of Claude Code sessions from their state repositories, with Feishu chat via feishu-channel-for-claude-code.",
+  "author": { "name": "aiechoic" },
+  "license": "MIT",
+  "repository": "https://github.com/aiechoic/claude-worker-kit",
+  "keywords": ["team", "worker", "leader", "restore", "feishu", "lark", "docker"]
+}

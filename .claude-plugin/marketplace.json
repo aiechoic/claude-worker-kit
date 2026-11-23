@@ -1,0 +1,14 @@
+{
+  "name": "worker-kit",
+  "owner": {
+    "name": "aiechoic"
+  },
+  "plugins": [
+    {
+      "name": "worker-kit",
+      "source": "./",
+      "description": "Leader + worker team environments for Claude Code: set up, restore, rebuild, roll back, accept."
+    }
+  ],
+  "description": "worker-kit: leader + worker team environments for Claude Code."
+}

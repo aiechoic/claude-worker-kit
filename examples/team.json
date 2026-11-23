@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "project": "example",
+  "roles": {
+    "leader": {
+      "stateRepo": "git@github.com:example-org/example-leader-state.git",
+      "stateClone": "~/example/leader",
+      "dir": "leader",
+      "deployKey": "~/.ssh/example-leader-state",
+      "workDir": { "linux": "~/example/leader", "windows": "~/example/leader" },
+      "manual": "CLAUDE.md",
+      "lock": true,
+      "bot": { "appId": "cli_example_leader", "profile": "example-leader-agent", "brand": "feishu" },
+      "channel": {
+        "repo": "https://github.com/aiechoic/feishu-channel-for-claude-code.git",
+        "checkout": "~/example/.tools/feishu-channel",
+        "config": "~/example/.tools/feishu-channel-config/config.json",
+        "saved": "tools/feishu-channel/config.json",
+        "appSecretFile": "~/example/.creds/leader-app-secret"
+      },
+      "chats": { "status": "oc_example_leader_status" },
+      "secrets": [
+        { "name": "leader bot App Secret", "path": "{channel.appSecretFile}", "by": "user", "note": "Feishu open platform → the leader app → Credentials" },
+        { "name": "GitHub CLI login", "check": "gh auth status", "by": "user", "note": "gh auth login" },
+        { "name": "admin MCP server", "check": "claude mcp get example-admin", "by": "user", "note": "token from the admin console; claude mcp add …" }
+      ]
+    },
+    "worker": {
+      "stateRepo": "git@github.com:example-org/example-workers.git",
+      "stateClone": "/work/example-workers",
+      "dir": "worker-{n}",
+      "deployKey": "/work/.ssh/example-workers",
+      "workDir": "/work",
+      "manual": "CLAUDE.md",
+      "bot": { "profile": "example-worker-{n}-agent", "brand": "feishu" },
+      "channel": {
+        "repo": "https://github.com/aiechoic/feishu-channel-for-claude-code.git",
+        "checkout": "/work/.worker-tools/feishu-channel-repo",
+        "config": "/work/.worker-tools/feishu-channel-config/config.json",
+        "saved": "tools/feishu-channel/config.json",
+        "appSecretFile": "/work/.feishu-app-secret"
+      },
+      "secrets": [
+        { "name": "worker bot App Secret", "path": "{channel.appSecretFile}", "by": "user", "note": "Feishu open platform → this worker's app → Credentials" },
+        { "name": "model API key", "path": "/work/.example-model-key", "by": "host credential directory (mounted read-only)" }
+      ],
+      "runtime": {
+        "docker": {
+          "wsl": "auto",
+          "buildContext": "~/example-infra",
+          "dockerfile": "infra/worker/Dockerfile",
+          "image": "example-worker",
+          "compose": "infra/worker/compose.yml",
+          "composeProject": "worker{n}",
+          "container": "worker-{n}",
+          "env": { "WORKER": "{n}", "CRED_ROOT": "~/example-creds" },
+          "credDir": "~/example-creds/worker-{n}",
+          "init": ["bash", "/opt/example-worker/init.sh"],
+          "workDir": "/work"
+        },
+        "native": {}
+      }
+    }
+  },
+  "members": {
+    "1": {
+      "bot": { "appId": "cli_example_worker1" },
+      "chats": { "work": "oc_example_worker1" }
+    },
+    "2": {
+      "runtime": { "mode": "native" },
+      "workDir": { "windows": "~/example/worker-2" },
+      "stateClone": "~/example/worker-2/example-workers",
+      "deployKey": "~/example/worker-2/.ssh/example-workers",
+      "channel": {
+        "checkout": "~/example/worker-2/.tools/feishu-channel",
+        "config": "~/example/worker-2/.feishu-channel/config.json",
+        "appSecretFile": "~/example/worker-2/.creds/app-secret"
+      },
+      "bot": { "appId": "cli_example_worker2" },
+      "chats": { "work": "oc_example_worker2" }
+    }
+  }
+}
