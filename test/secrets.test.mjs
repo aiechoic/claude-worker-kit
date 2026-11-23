@@ -20,7 +20,7 @@ const skip = hasAge ? false : 'age / age-keygen not installed (winget install Fi
 const APP_SECRET = Buffer.from('appsecret-example-0123456789abcdef')
 const MODEL_KEY = Buffer.concat([Buffer.from('model-key-example\r\n'), Buffer.from([0, 0xff, 0xfe, 0x80, 0x0a])])
 
-function machine(root, name, recipient, stateClone) {
+function machine(root, name, recipient, stateClone, n = 7) {
   const home = join(root, name)
   const creds = join(home, 'creds')
   mkdirSync(home, { recursive: true })
@@ -40,15 +40,15 @@ function machine(root, name, recipient, stateClone) {
         ],
       },
     },
-    members: { 7: {} },
+    members: { 7: {}, 8: {} },
   }
   const teamFile = join(home, 'team.json')
   writeFileSync(teamFile, JSON.stringify(team))
   const env = { ...process.env, CLAUDE_CONFIG_DIR: join(home, 'claude'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.invalid', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.invalid' }
-  const run = (script, args, opts = {}) => spawnSync(process.execPath, [script, ...args, '--role', 'worker', '--n', '7', '--team', teamFile], { encoding: 'utf8', env, ...opts })
+  const run = (script, args, opts = {}) => spawnSync(process.execPath, [script, ...args, '--role', 'worker', '--n', String(n), '--team', teamFile], { encoding: 'utf8', env, ...opts })
   return {
     home, creds, teamFile,
-    state: join(team.roles.worker.stateClone, 'worker-7'),
+    state: join(team.roles.worker.stateClone, `worker-${n}`),
     appSecret: join(creds, 'app-secret'),
     modelKey: join(creds, 'nested', 'model.key'),
     secrets: (args, opts) => run(SECRETS, args, opts),
@@ -326,4 +326,43 @@ test('without age, seal and unseal stop for the user with how to install it', ()
   const st = a.secrets(['status'], { env })
   assert.equal(st.status, 0)
   assert.match(st.stdout, /age: not installed/)
+})
+
+test('a .gitattributes written by seal does not stop the next pull when another member already pushed one', { skip: skip || (win && 'state round trip is covered on Linux') }, () => {
+  const s = setup({ git: false })
+  const bare = join(s.root, 'remote.git')
+  sh('git', ['init', '-q', '--bare', '-b', 'main', bare])
+  const seed = join(s.root, 'seed')
+  sh('git', ['clone', '-q', bare, seed])
+  writeFileSync(join(seed, 'README.md'), 'state\n')
+  sh('git', ['-C', seed, 'add', '.'])
+  sh('git', ['-C', seed, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 'init'])
+  sh('git', ['-C', seed, 'push', '-q', 'origin', 'HEAD:main'])
+
+  // worker 8 on machine b clones first; then worker 7 on machine a seals and pushes .gitattributes
+  const b = machine(s.root, 'b', s.recipient, undefined, 8)
+  assert.equal(b.stateCmd(['restore']).status, 0)
+  mkdirSync(join(b.creds, 'nested'), { recursive: true })
+  writeFileSync(b.appSecret, 'appsecret-example-worker8')
+  writeFileSync(b.modelKey, 'model-key-example-worker8')
+  assert.equal(s.a.stateCmd(['restore']).status, 0)
+  assert.equal(s.a.stateCmd(['save', '-m', 'a creds']).status, 0)
+
+  // b seals by hand: an untracked .gitattributes appears, with one line of b's own
+  const sealed = b.secrets(['seal'])
+  assert.match(sealed.stdout, /added "\*\.age binary"/)
+  const bClone = join(s.root, 'b', 'state')
+  writeFileSync(join(bClone, '.gitattributes'), '*.age binary\n*.example-bin binary\n')
+  const saved = b.stateCmd(['save', '-m', 'b creds'])
+  assert.equal(saved.status, 0, saved.stderr + saved.stdout)
+  assert.doesNotMatch(saved.stdout + saved.stderr, /pull failed|would be overwritten/)
+
+  const check = join(s.root, 'check')
+  sh('git', ['clone', '-q', bare, check])
+  const attrs = readFileSync(join(check, '.gitattributes'), 'utf8')
+  assert.equal(attrs.match(/^\*\.age binary$/gm).length, 1, attrs)
+  assert.match(attrs, /^\*\.example-bin binary$/m)
+  const files = sh('git', ['-C', check, 'ls-files']).stdout
+  assert.match(files, /worker-7\/secrets\/model\.age/)
+  assert.match(files, /worker-8\/secrets\/model\.age/)
 })

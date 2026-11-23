@@ -67,8 +67,22 @@ function identityArgs() {
 
 function pull() {
   if (dry) { info(`[dry-run] git pull --rebase --autostash (${CLONE})`); return }
-  const p = g(['pull', '-q', '--rebase', '--autostash'])
-  if (p.status !== 0) warn(`pull failed, continuing with the local copy: ${p.stderr.trim()}`)
+  // seal may have written a .gitattributes that is not committed yet, while another member already pushed one;
+  // an untracked file in the way stops the pull. Move it aside, pull, then add back the lines the pulled one lacks.
+  const attrs = join(CLONE, '.gitattributes')
+  const aside = existsSync(attrs) && g(['ls-files', '--error-unmatch', '--', '.gitattributes']).status !== 0 ? readFileSync(attrs, 'utf8') : null
+  if (aside !== null) unlinkSync(attrs)
+  try {
+    const p = g(['pull', '-q', '--rebase', '--autostash'])
+    if (p.status !== 0) warn(`pull failed, continuing with the local copy: ${p.stderr.trim()}`)
+  } finally {
+    if (aside !== null) {
+      const cur = existsSync(attrs) ? readFileSync(attrs, 'utf8') : ''
+      const have = new Set(cur.split(/\r?\n/).map(l => l.trim()))
+      const add = [...new Set(aside.split(/\r?\n/).map(l => l.trim()).filter(l => l && !have.has(l)))]
+      if (add.length) writeFileSync(attrs, `${cur}${cur && !cur.endsWith('\n') ? '\n' : ''}${add.join('\n')}\n`)
+    }
+  }
 }
 
 function commitAndPush(paths, message) {
