@@ -1,6 +1,6 @@
 {
   "name": "worker-kit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Set up, restore, rebuild or roll back a leader + worker team of Claude Code sessions from their state repositories, with Feishu chat via feishu-channel-for-claude-code.",
   "author": { "name": "aiechoic" },
   "license": "MIT",
