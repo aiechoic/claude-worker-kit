@@ -4,7 +4,7 @@
  * the role and session-state file names come from roleFile / sessionState in the team file).
  *
  *   node state.mjs restore  --role worker --n 3     clone or pull, link (or copy) memory, import ROLE.md into the manual
- *   node state.mjs save     --role worker --n 3 [-m "message"]   commit this session's directory and push
+ *   node state.mjs save     --role worker --n 3 [-m "message"]   seal changed credentials (secrets.mjs), commit this session's directory and push
  *   node state.mjs lock     --role leader [--force] [--session <label>]   take the single-leader lock
  *   node state.mjs release  --role leader [--force]                     hand the lock over
  *   node state.mjs status   --role leader|worker [--n N]
@@ -16,6 +16,7 @@ import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSy
 import { userInfo } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { applySave, listFiles, MARK, mirrorDir, readMarker, savePlan, unsavedLocal, writeMarker } from './lib/memsync.mjs'
+import { ageVersion, recipientOf, seal, sealedEntries } from './lib/secrets.mjs'
 import { absPath, claudeProjectDir, die, git, info, isWin, needUser, ok, parseArgs, roleFilePath, roleFromArgs, secretsOf, sessionStatePath, thisHost, warn } from './lib/team.mjs'
 
 const args = parseArgs(process.argv.slice(2))
@@ -39,7 +40,7 @@ if (cmd === 'clone') {
   process.exit(0)
 }
 
-const { r } = roleFromArgs(args)
+const { team, r } = roleFromArgs(args)
 
 if (!r.stateRepo) die(`roles.${r.role}.stateRepo is missing`)
 if (!r.stateClone) die(`roles.${r.role}.stateClone (where to clone the state repo) is missing`)
@@ -251,7 +252,14 @@ function restore() {
   const manual = []
   if (r.bot?.profile) manual.push(`lark-cli profile ${r.bot.profile} (check: node scripts/lark.mjs check …)`)
   if (r.channel) manual.push('Feishu channel: node scripts/channel.mjs install / place …')
-  for (const s of secretsOf(r)) manual.push(`${s.name}: ${s.path ?? '(see note)'}, filled by ${s.by ?? 'the user'}${s.note ? ` (${s.note})` : ''}`)
+  // credentials sealed in the repo come back in one step with the master key; the rest are filled one by one
+  let sealed = []
+  try { sealed = sealedEntries(r).filter(e => existsSync(e.file)) } catch (e) { warn(e.message) }
+  if (sealed.length) manual.push(`sealed credentials (${sealed.map(e => e.id).join(', ')}): the user pipes the master key into node scripts/secrets.mjs unseal … --identity - (never through the session)`)
+  for (const s of secretsOf(r)) {
+    if (s.path && sealed.some(e => e.path === absPath(s.path))) continue
+    manual.push(`${s.name}: ${s.path ?? '(see note)'}, filled by ${s.by ?? 'the user'}${s.note ? ` (${s.note})` : ''}`)
+  }
   if (manual.length) {
     console.log('\nStill to do by hand (credentials never live in the state repo):')
     for (const m of manual) console.log(`  - ${m}`)
@@ -263,9 +271,23 @@ function save() {
   if (!existsSync(join(CLONE, '.git'))) die(`${CLONE} is not cloned yet; run restore first`)
   pull() // first, so copy-mode memory is compared with what other machines saved
   saveMemoryCopy()
+  sealChanged()
   if (r.lock) refreshLock()
   const msg = typeof args.m === 'string' ? args.m : (args._[1] || 'state')
   if (!commitAndPush([r.dir ?? '.'], msg)) process.exit(1)
+}
+
+/** Seal credentials that changed since the last seal, so save carries them. A problem here warns; it does not stop the save. */
+function sealChanged() {
+  let entries, recipient
+  try { entries = sealedEntries(r); recipient = recipientOf(team, r) } catch (e) { warn(`sealed credentials skipped: ${e.message}`); return }
+  if (!entries.length) return
+  if (!recipient) { warn('sealed credentials skipped: the team file has no secretsRecipient'); return }
+  if (!ageVersion()) { warn('sealed credentials skipped: age is not installed (see secrets.mjs)'); return }
+  try {
+    const res = seal(entries, recipient, { dry })
+    if (res.sealed.length) ok(`sealed: ${res.sealed.join(', ')}`)
+  } catch (e) { warn(`sealed credentials skipped: ${e.message}`) }
 }
 
 function status() {

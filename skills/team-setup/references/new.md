@@ -7,6 +7,7 @@
    - Copy `examples/team.json` from this kit into each state repo as `team.json`.
    - Fill in the repo URLs, paths and runtime settings.
    - Bot app ids and chat ids come later, as they are created.
+   - To carry credentials in the repos ([secrets.md](secrets.md)): the user makes the master key with `secrets.mjs keygen` 🖐 and keeps it. Put the printed public key into `secretsRecipient`, and mark the credentials with `"sealed": true`. Members seal their own at `save`.
    - Commit the file. It is project data, so it stays in the private repos.
 3. **Leader bot**: the user creates a Feishu app for the leader 🖐.
    - Enable the bot.

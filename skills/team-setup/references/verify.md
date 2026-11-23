@@ -17,7 +17,7 @@ All checks must pass:
 - the bot reads the work chat;
 - the channel config is in place, its App Secret file is present (not read), and its allow list is not empty;
 - the channel is installed, and the `team-claude` first on PATH runs the team file's checkout with its config (not just any `team-claude`);
-- every `secrets` entry is present, or its check passes.
+- every `secrets` entry is present, or its check passes. For sealed entries, `secrets.mjs status` also shows whether they are sealed in the repo.
 
 Add `--offline` to skip the chat read when there is no network to Feishu.
 

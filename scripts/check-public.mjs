@@ -4,8 +4,8 @@
  *
  *   node scripts/check-public.mjs
  *
- * Built in: Feishu ids (cli_ / oc_ / ou_ followed by real-looking hex), private keys, App-Secret-like assignments,
- * hostnames that are not example ones. Project words (names of the team, its business, internal hosts) go into an
+ * Built in: Feishu ids (cli_ / oc_ / ou_ followed by real-looking hex), private keys, age master keys, sealed .age files,
+ * App-Secret-like assignments, hostnames that are not example ones. Project words (names of the team, its business, internal hosts) go into an
  * untracked `.public-denylist` file (one regex per line), or into the PUBLIC_DENYLIST env var (newline-separated)
  * in CI, so the list itself is not published.
  */
@@ -16,6 +16,7 @@ const files = execFileSync('git', ['ls-files'], { encoding: 'utf8' }).split('\n'
 const rules = [
   [/\b(cli|oc|ou|on)_[0-9a-f]{16,}\b/g, 'Feishu id (use cli_example… / oc_example…)'],
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----/g, 'private key'],
+  [/AGE-SECRET-KEY-1[0-9A-Z]{20,}/g, 'age master key'],
   [/\bssh-(ed25519|rsa) AAAA[0-9A-Za-z+/]{20,}/g, 'public key (fine to send, but not to keep in this repo)'],
   [/"app_?secret"\s*:\s*"[^"<]{8,}"/gi, 'inline App Secret'],
   [/\bsk-[A-Za-z0-9]{20,}\b/g, 'API key'],
@@ -33,6 +34,7 @@ for (const e of extra) rules.push([new RegExp(e, 'gi'), 'denylisted word'])
 let bad = 0
 for (const f of files) {
   if (f === 'scripts/check-public.mjs') continue
+  if (f.endsWith('.age')) { bad++; console.log(`${f}: sealed credential file (belongs in a private state repo)`); continue }
   let text
   try { text = readFileSync(f, 'utf8') } catch { continue }
   text.split('\n').forEach((line, i) => {

@@ -18,10 +18,11 @@ Run these inside the worker's container. Either the host session runs them throu
    - Memory is linked to `<stateClone>/<dir>/memory`.
    - The manual imports `ROLE.md`. If the project's init rewrote the manual, `restore` adds the import again.
    - Then read `session-state.md`.
+3. **Sealed credentials**: if `restore` listed sealed credentials, the user unseals them with the master key, from a terminal in the container 🖐 (`docker exec -it <container> bash`, then the Linux command in [secrets.md](secrets.md#unseal-on-a-new-machine-restore)). ⛔ The master key never goes through the session. Without sealed files, go on: each credential is filled by hand below.
 
 ## 2. Feishu
 
-1. **App Secret file**: `node $KIT/scripts/channel.mjs check-secret A`.
+1. **App Secret file**: `node $KIT/scripts/channel.mjs check-secret A`. After an unseal it is already there.
    - If it exits 10, the user writes the file from a terminal in the container 🖐 (`docker exec -it <container> bash`, then the command the script printed).
    - The secret is on the Feishu open platform, under the worker's app → Credentials.
 2. **lark-cli**: `node $KIT/scripts/lark.mjs add A`. The secret is piped from the file. Then run `lark.mjs check A` and `lark.mjs ping A`.
@@ -38,7 +39,7 @@ Run these inside the worker's container. Either the host session runs them throu
 
 - **Timers and cron**: their text is in `tools/`. Install them as `ROLE.md` says.
 - **Data files**: small ones are in `data/`. For big ones, `ROLE.md` says where they live.
-- **Credentials**: `ROLE.md` names where each one goes. The user, or the host credential directory, fills it.
+- **Credentials**: the sealed ones came back in step 1. For the rest, `ROLE.md` names where each one goes; the user, or the host credential directory, fills it. `node $KIT/scripts/secrets.mjs status A` shows which are sealed.
 
 ## 4. Accept and start
 

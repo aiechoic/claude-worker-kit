@@ -1,6 +1,7 @@
 {
   "version": 1,
   "project": "example",
+  "secretsRecipient": "age1-put-the-public-key-printed-by-secrets-keygen-here",
   "roles": {
     "leader": {
       "stateRepo": "git@github.com:example-org/example-leader-state.git",
@@ -41,7 +42,7 @@
         "appSecretFile": "/work/.feishu-app-secret"
       },
       "secrets": [
-        { "name": "worker bot App Secret", "path": "{channel.appSecretFile}", "by": "user", "note": "Feishu open platform → this worker's app → Credentials" },
+        { "name": "worker bot App Secret", "path": "{channel.appSecretFile}", "by": "user", "note": "Feishu open platform → this worker's app → Credentials", "sealed": true },
         { "name": "model API key", "path": "/work/.example-model-key", "by": "host credential directory (mounted read-only)" }
       ],
       "runtime": {

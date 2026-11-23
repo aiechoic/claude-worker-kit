@@ -28,13 +28,14 @@ S restore
 
 - The script links (Linux) or copies (Windows) the memory directory.
 - It adds `@…/ROLE.md` to the manual.
-- It lists the credentials still to fill.
+- It lists the credentials still to fill, and the sealed ones it found.
+- If there are sealed credentials, the user unseals them now with the master key, from a terminal of their own 🖐 ([secrets.md](secrets.md#unseal-on-a-new-machine-restore)). ⛔ Not through the session.
 - Read `session-state.md` afterwards.
 
 ## 4. GitHub, lark-cli, channel
 
 1. **GitHub CLI**: `gh auth status`. If that fails, the user runs `gh auth login` 🖐. Adding workers' deploy keys needs admin rights on the workers' state repo.
-2. **App Secret file**: `node "$KIT/scripts/channel.mjs" check-secret --role leader --team …`. If it exits 10, the user writes the secret file as shown 🖐.
+2. **App Secret file**: `node "$KIT/scripts/channel.mjs" check-secret --role leader --team …`. After an unseal it is already there. If it exits 10, the user writes the secret file as shown 🖐.
 3. **lark-cli**: `node "$KIT/scripts/lark.mjs" add --role leader --team …`. The secret is piped from the App Secret file. Then run `lark.mjs check`.
 4. **Channel**, in this order:
    1. `channel.mjs install --role leader …` clones the public channel repo over https (skipping a global https→ssh rewrite) and runs `npm ci`.
@@ -42,7 +43,8 @@ S restore
    3. `channel.mjs launcher …` installs `team-claude` against that config. If a `team-claude` already points at another checkout or config, it stops and shows it; `--replace` after the user agrees.
    4. `channel.mjs doctor …` checks the bot's permissions.
 5. **Project MCP servers and tokens**: go through `secrets` in the team file one by one.
-   - For each `path` entry the user puts the file there 🖐.
+   - Sealed entries are already back. `secrets.mjs status --role leader --team …` lists them.
+   - For each other `path` entry the user puts the file there 🖐.
    - For each `check` entry, run the check. If it fails, show the `note` and the user fixes it 🖐 (for example `claude mcp add …` with a token they paste).
 
 ## 5. Accept

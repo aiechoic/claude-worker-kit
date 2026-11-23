@@ -15,11 +15,12 @@ Everything project-specific comes from the project's **team file** (`team.json`,
 
 ## Where the scripts are
 
-`KIT` = the directory two levels above this skill's base directory (the plugin root, which holds `scripts/`). Run every script as `node "$KIT/scripts/<name>.mjs" …` (PowerShell: `node "$env:KIT\scripts\<name>.mjs"`). Node 20+ is the only requirement; there is nothing to install.
+`KIT` = the directory two levels above this skill's base directory (the plugin root, which holds `scripts/`). Run every script as `node "$KIT/scripts/<name>.mjs" …` (PowerShell: `node "$env:KIT\scripts\<name>.mjs"`). Node 20+ is required, and the official `age` tool (`age`, `age-keygen`, 1.1 or later) when the team seals credentials. There are no npm packages to install.
 
 | script | does |
 | --- | --- |
-| `state.mjs` | `clone` (before a team file exists), `restore`, `save`, `lock` / `release` (leader), `status` |
+| `state.mjs` | `clone` (before a team file exists), `restore`, `save` (seals changed credentials first), `lock` / `release` (leader), `status` |
+| `secrets.mjs` | `status` (names only), `seal`, `unseal` (master key from the user, once), `keygen` (a new master key) |
 | `channel.mjs` | `install` (channel repo + `team-claude`), `launcher` (only `team-claude`; stops if it points elsewhere, `--replace`), `place` (saved config → live), `capture` (portable fields → state repo), `allow`, `doctor`, `show` |
 | `lark.mjs` | `check`, `add` (secret piped from its file), `ping` (reads the work chat) |
 | `host.mjs` | docker host: `status`, `rebuild`, `rollback`, `finish`, `copy-kit`, `exec` (plans only, unless `--yes`) |
@@ -31,7 +32,8 @@ Every script takes `--role leader|worker`, `--n <N>` for workers, `--team <team.
 ## Rules for the whole run
 
 - ⛔ **Never read, print, log or paste a credential**: App Secrets, private keys, tokens, API keys, database passwords. Check only that a file exists and is non-empty. Secrets move file → program (stdin), never through the conversation.
-- **Steps for the user.** A script that exits with code **10** printed a "🖐 This step needs you" block. Stop, show the user those lines, and wait until they say it is done. Then run the same step again. These steps are always for the user: logging in to Claude, `gh auth login`, pasting an App Secret, creating a Feishu bot or chat, and forwarding a public key to the leader.
+- ⛔ **The master key** (the age identity that unseals the team's credentials, `AGE-SECRET-KEY-1…`) never reaches the session. The user pipes it into `secrets.mjs unseal` in a terminal of their own ([references/secrets.md](references/secrets.md)). If they paste it into the conversation, tell them it is exposed and that the team must make a new master key and seal again.
+- **Steps for the user.** A script that exits with code **10** printed a "🖐 This step needs you" block. Stop, show the user those lines, and wait until they say it is done. Then run the same step again. These steps are always for the user: logging in to Claude, `gh auth login`, handing over the master key, pasting an App Secret, creating a Feishu bot or chat, forwarding a public key to the leader, and installing age.
 - **Plan, then do.** On the host, run `host.mjs` without `--yes` first, show the plan, and get the user's go-ahead before `--yes`. Do the same for anything that stops, renames or removes a container.
 - **Only this member.** Do not touch other members' containers, volumes, chats or state directories.
 - **Keep the old one.** A rebuild keeps the old container (`<name>-old`), its volumes and the old image tag until the user decides. Roll back at the first step that cannot be fixed. See [references/rollback.md](references/rollback.md).
