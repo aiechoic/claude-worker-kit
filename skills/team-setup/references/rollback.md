@@ -12,14 +12,16 @@ node "$KIT/scripts/host.mjs" rollback --n N --team … --yes    # after the user
 The rollback does three things:
 
 1. It removes the new container: `docker rm -f <container>`.
-2. It renames `<container>-old` back and starts it.
+2. It renames `<container>-old` back and starts it. If the rebuild stopped between stopping the old container and renaming it, it starts that container again under its own name.
 3. It puts the old image back: `docker tag <image>:pre-<stamp> <image>`.
+
+If the rebuild record says the rebuild stopped at the image tag or build, nothing was touched: rollback only removes the record (a new `rebuild --yes` does not need it either).
 
 The new volumes are left in place. The script prints the `docker compose -p <new project> … down -v` that removes them, and the user decides.
 
 The old session lives on the old volumes, with its own `team-claude` inside the container. The user starts it again with `team-claude` in its work directory 🖐.
 
-Without a rollback record (`~/.claude-worker-kit/<container>.json` on the host), `rollback` still brings `<container>-old` back if it exists. The old image tag is then up to the user.
+Without a rebuild record (`~/.claude-worker-kit/<container>.json` on the host), `rollback` still brings `<container>-old` back if it exists. The old image tag is then up to the user.
 
 ## Native worker
 

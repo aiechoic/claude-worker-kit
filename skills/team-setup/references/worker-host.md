@@ -27,6 +27,16 @@ The rebuild does five things:
 4. It starts a new container under a new compose project `<composeProject>-<stamp>`. A new project name means new, empty volumes, so nothing is mounted from the old ones.
 5. It runs the project's init hook in the container. The init must end green. If it does not, see [rollback.md](rollback.md).
 
+The rebuild record `~/.claude-worker-kit/<container>.json` (on the machine that runs `host.mjs`) notes each step as it completes; `H status` shows how far it got and which step failed. If a step fails:
+
+- **Step 1 or 2** (tag, image build): the container was not touched. The pre- tag of that attempt is removed, and the same `H rebuild --yes` simply runs again once the cause is fixed.
+  A failed build prints the last 60 lines of `docker build` (the whole log is `~/.claude-worker-kit/<container>-build.log` on the docker host). The build downloads base images and toolchains (Go, Node, the Playwright browsers…), so a timeout, TLS or connection error there is usually the network: set a proxy for docker (`"proxies"` in `~/.docker/config.json` on the docker host, or `HTTP_PROXY` / `HTTPS_PROXY` for the docker daemon) and run it again.
+- **Step 3, 4 or 5** (the old container is stopped or renamed): the record is kept and a plain rebuild is refused. Two ways on, the user chooses:
+  - `H rollback --yes`: back to the old container ([rollback.md](rollback.md));
+  - `H rebuild --resume --yes`: continue at the failed step, with the same compose project, once its cause is fixed.
+
+`H finish` refuses a rebuild that did not complete.
+
 The rebuild then exits 10: the user logs in to Claude inside the new container 🖐 (`docker exec -it <container> bash`, run `claude`, log in, exit).
 
 **Note:** the new compose project name is the one to use from now on. The old name mounts the old volumes. Tell the user, and write it into the member's `ROLE.md` when you get there.
@@ -45,4 +55,4 @@ Once the worker has passed acceptance ([verify.md](verify.md)) and the leader ha
 H finish --yes
 ```
 
-This forgets the rollback record. `<container>-old`, its volumes and the `pre-` image tag stay until the user decides to remove them. Suggest keeping them for a week.
+This forgets the rebuild record. `<container>-old`, its volumes and the `pre-` image tag stay until the user decides to remove them. Suggest keeping them for a week.

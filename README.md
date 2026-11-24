@@ -72,7 +72,7 @@ More roles (for example ops or report) are added as `roles.<name>` in the team f
 ## Development
 
 ```bash
-node --test test/*.test.mjs     # state round trip, leader lock, copy mode, channel config, host rebuild/rollback (fake docker), sealed credentials (real age; skipped without it)
+node --test test/*.test.mjs     # state round trip, leader lock, copy mode, channel config, host rebuild/resume/rollback (fake docker), sealed credentials (real age; skipped without it)
 node scripts/check-public.mjs   # with your project's words in an untracked .public-denylist
 ```
 
