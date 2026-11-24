@@ -25,7 +25,7 @@ What is different from a docker worker:
 ## Steps
 
 1. **Work directory**: make the directory (`workDir`) and start Claude Code there. For a rebuild, use a new directory and keep the old one.
-2. **State repo**: do step 1 of [worker-inside.md](worker-inside.md), with the same commands and Windows paths. `ssh-keygen` comes with Windows' OpenSSH client. For sealed credentials the user runs the Windows command in [secrets.md](secrets.md#unseal-on-a-new-machine-restore) from a separate PowerShell window 🖐 (age: `winget install FiloSottile.age`, then a new terminal or session).
+2. **State repo**: do step 1 of [worker-inside.md](worker-inside.md), with the same commands and Windows paths. `ssh-keygen` comes with Windows' OpenSSH client. For sealed credentials the user runs the Windows command in [secrets.md](secrets.md#unseal-on-a-new-machine-restore) from a separate PowerShell window 🖐, opened after age is installed (the session installs it with winget: [secrets.md](secrets.md#install-age)).
 3. **Feishu**: do step 2 of [worker-inside.md](worker-inside.md). When `check-secret` exits 10, the user writes the App Secret from a separate PowerShell window with the command the script printed 🖐.
 4. **Accept**: run `verify.mjs A`, then `state.mjs save A`.
 5. **Start**: the user opens a new terminal in the work directory and runs `team-claude` 🖐. `channel.mjs install` installed `team-claude.cmd` into npm's global bin.

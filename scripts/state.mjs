@@ -299,7 +299,7 @@ function sealChanged() {
   try { entries = sealedEntries(r); recipient = recipientOf(team, r) } catch (e) { warn(`sealed credentials skipped: ${e.message}`); return }
   if (!entries.length) return
   if (!recipient) { warn('sealed credentials skipped: the team file has no secretsRecipient'); return }
-  if (!ageVersion()) { warn('sealed credentials skipped: age is not installed (see secrets.mjs)'); return }
+  if (!ageVersion()) { warn('sealed credentials skipped: age is not installed (secrets.mjs age prints the command that installs it)'); return }
   try {
     const res = seal(entries, recipient, { dry, place: sealPlace(r) })
     if (res.sealed.length) ok(`sealed: ${res.sealed.join(', ')}`)

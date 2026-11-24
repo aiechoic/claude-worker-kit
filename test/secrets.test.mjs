@@ -2,11 +2,13 @@
 // a wrong master key or a tampered file writes nothing; status and seal never show a credential.
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
+
+import { ageBins, ageInstallPlan, onPath, wingetAge } from '../scripts/lib/secrets.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const SECRETS = join(ROOT, 'scripts', 'secrets.mjs')
@@ -313,19 +315,98 @@ test('check-public flags an age master key and a committed .age file', () => {
   assert.match(r.stdout, /app-secret\.age: sealed credential file/)
 })
 
-test('without age, seal and unseal stop for the user with how to install it', () => {
+test('the install plan: apt-get as root, sudo without a password, docker exec -u root, winget; else the user', () => {
+  const has = (...cmds) => c => cmds.includes(c)
+  const APT = 'apt-get update && apt-get install -y age'
+  const no = () => { throw new Error('sudo is not asked for') }
+  let p = ageInstallPlan({ win: false, has: has('apt-get'), root: true, sudoOk: no })
+  assert.equal(p.here, APT)
+  assert.equal(p.host, null)
+  p = ageInstallPlan({ win: false, has: has('apt-get', 'sudo'), root: false, sudoOk: () => true })
+  assert.equal(p.here, 'sudo apt-get update && sudo apt-get install -y age')
+  p = ageInstallPlan({ win: false, has: has('apt-get', 'sudo'), root: false, sudoOk: () => false })
+  assert.equal(p.here, null, 'sudo that asks for a password is for the user')
+  assert.match(p.user.join('\n'), /sudo apt-get update && sudo apt-get install -y age/)
+  p = ageInstallPlan({ win: false, has: has('apt-get'), root: false, sudoOk: no })
+  assert.equal(p.here, null)
+  p = ageInstallPlan({ win: false, has: has(), root: true, sudoOk: no })
+  assert.equal(p.here, null)
+  p = ageInstallPlan({ win: false, has: has('apt-get'), root: false, sudoOk: () => false, container: 'worker-7', inContainer: true })
+  assert.equal(p.host, `docker exec -u root worker-7 sh -c '${APT}'`)
+  p = ageInstallPlan({ win: false, has: has(), root: true, sudoOk: no, container: 'worker-7', inContainer: true })
+  assert.equal(p.host, null, 'a container without apt-get')
+  p = ageInstallPlan({ win: false, has: has(), root: true, sudoOk: no, container: 'worker-7', inContainer: false })
+  assert.match(p.host, /^docker exec -u root worker-7 /)
+  p = ageInstallPlan({ win: true, has: has('winget'), root: false, sudoOk: no })
+  assert.equal(p.here, 'winget install --id FiloSottile.age -e --accept-source-agreements --accept-package-agreements')
+  assert.match(p.after.join(' '), /without a restart/)
+  p = ageInstallPlan({ win: true, has: has(), root: false, sudoOk: no })
+  assert.equal(p.here, null)
+  assert.match(p.user.join('\n'), /winget install --id FiloSottile\.age -e/)
+})
+
+test('age from winget is found without a new terminal: the Links folder, else the package folder', () => {
+  const lad = mkdtempSync(join(tmpdir(), 'cwk-winget-'))
+  assert.equal(wingetAge(lad), null)
+  assert.equal(wingetAge(undefined), null)
+  const pkg = join(lad, 'Microsoft', 'WinGet', 'Packages', 'FiloSottile.age_Microsoft.Winget.Source_8wekyb3d8bbwe', 'age')
+  mkdirSync(pkg, { recursive: true })
+  writeFileSync(join(pkg, 'age.exe'), '')
+  assert.equal(wingetAge(lad), null, 'age-keygen.exe is needed too')
+  writeFileSync(join(pkg, 'age-keygen.exe'), '')
+  assert.deepEqual(wingetAge(lad), { age: join(pkg, 'age.exe'), keygen: join(pkg, 'age-keygen.exe') })
+  const links = join(lad, 'Microsoft', 'WinGet', 'Links')
+  mkdirSync(links, { recursive: true })
+  writeFileSync(join(links, 'age.exe'), ''); writeFileSync(join(links, 'age-keygen.exe'), '')
+  assert.deepEqual(wingetAge(lad), { age: join(links, 'age.exe'), keygen: join(links, 'age-keygen.exe') })
+
+  // on PATH wins; else (Windows) the winget folder; $WORKER_KIT_AGE wins over both
+  assert.deepEqual(ageBins({ PATH: '', LOCALAPPDATA: lad }, true), { age: join(links, 'age.exe'), keygen: join(links, 'age-keygen.exe') })
+  assert.deepEqual(ageBins({ PATH: '', LOCALAPPDATA: lad }, false), { age: 'age', keygen: 'age-keygen' })
+  assert.deepEqual(ageBins({ PATH: links, PATHEXT: '.EXE', LOCALAPPDATA: lad }, true), { age: 'age', keygen: 'age-keygen' })
+  assert.deepEqual(ageBins({ WORKER_KIT_AGE: '/x/age', LOCALAPPDATA: lad }, true), { age: '/x/age', keygen: 'age-keygen' })
+  assert.ok(onPath('age', { PATH: links, PATHEXT: '.EXE' }, true))
+  assert.ok(!onPath('age', { PATH: links }, false))
+})
+
+test('without age, the scripts print the install command for the session (exit 11); without a way, the user (exit 10)', { skip: win && 'the fake package manager is a shell script' }, () => {
   const root = mkdtempSync(join(tmpdir(), 'cwk-noage-'))
   const a = machine(root, 'a', `age1${'q'.repeat(58)}`)
-  const env = { ...process.env, WORKER_KIT_AGE: join(root, 'no-such-age'), WORKER_KIT_AGE_KEYGEN: join(root, 'no-such-age-keygen') }
-  for (const args of [['seal'], ['unseal', '--identity', '-']]) {
-    const r = a.secrets(args, { env, input: '' })
-    assert.equal(r.status, 10, r.stderr + r.stdout)
-    assert.match(r.stdout, /age .*not on PATH/)
-    assert.match(r.stdout, win ? /winget install FiloSottile\.age/ : /apt install age/)
+  const bin = join(root, 'bin'); mkdirSync(bin)
+  for (const c of ['apt-get', 'sudo']) { writeFileSync(join(bin, c), '#!/bin/sh\nexit 0\n'); chmodSync(join(bin, c), 0o755) }
+  const empty = join(root, 'empty'); mkdirSync(empty)
+  const env = path => { const e = { ...process.env, PATH: path }; delete e.WORKER_KIT_AGE; delete e.WORKER_KIT_AGE_KEYGEN; return e }
+  const isRoot = process.getuid?.() === 0
+  for (const args of [['seal'], ['unseal', '--identity', '-'], ['age']]) {
+    const r = a.secrets(args, { env: env(bin), input: '' })
+    assert.equal(r.status, 11, r.stderr + r.stdout)
+    assert.match(r.stdout, /not a step for the user/)
+    assert.match(r.stdout, isRoot ? /on this machine: {2}apt-get update && apt-get install -y age/ : /on this machine: {2}sudo apt-get update && sudo apt-get install -y age/)
+    assert.doesNotMatch(r.stdout, /🖐|docker exec/)
   }
-  const st = a.secrets(['status'], { env })
+  const r = a.secrets(['seal'], { env: env(empty) })
+  assert.equal(r.status, 10, r.stderr + r.stdout)
+  assert.match(r.stdout, /🖐[\s\S]*no way to install it unattended[\s\S]*apt-get install -y age/)
+  const st = a.secrets(['status'], { env: env(empty) })
   assert.equal(st.status, 0)
   assert.match(st.stdout, /age: not installed/)
+  const k = spawnSync(process.execPath, [SECRETS, 'keygen', '--out', join(root, 'k')], { encoding: 'utf8', env: env(bin) })
+  assert.equal(k.status, 11, 'keygen too, without a role')
+
+  // a docker member: also the command for the docker host, as the container's root
+  const team = JSON.parse(readFileSync(a.teamFile, 'utf8'))
+  team.roles.worker.runtime = { docker: { image: 'ex-worker', container: 'worker-{n}', compose: 'c.yml', composeProject: 'worker{n}' } }
+  writeFileSync(a.teamFile, JSON.stringify(team))
+  const d = a.secrets(['age'], { env: env(bin) })
+  assert.equal(d.status, 11, d.stderr + d.stdout)
+  assert.match(d.stdout, /from the docker host: {2}docker exec -u root worker-7 sh -c 'apt-get update && apt-get install -y age'/)
+  assert.match(d.stdout, /host\.mjs exec --n 7 --root --/)
+})
+
+test('secrets.mjs age reports the version when age is there', { skip }, () => {
+  const r = spawnSync(process.execPath, [SECRETS, 'age'], { encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stderr + r.stdout)
+  assert.match(r.stdout, /age: v?\d/)
 })
 
 test('a .gitattributes written by seal does not stop the next pull when another member already pushed one', { skip: skip || (win && 'state round trip is covered on Linux') }, () => {

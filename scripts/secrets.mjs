@@ -6,6 +6,7 @@
  *   node secrets.mjs seal    --role … [--n N] [--force]           local credential files → <member dir>/secrets/<id>.age
  *   node secrets.mjs unseal  --role … [--n N] --identity -|<file> [--force]   .age files → their paths (mode 600)
  *   node secrets.mjs keygen  --out <file>                          a new master key (for the user to keep); prints its public key
+ *   node secrets.mjs age     [--role … --n N]                      is age installed here
  *
  * Common: --team <team.json> (else $TEAM_FILE, else team.json up from the cwd), --dry-run.
  *
@@ -13,20 +14,31 @@
  * seal needs only the public key, so any member can seal. unseal needs the master key, read once from stdin
  * (`--identity -`) or from a file the user names; it is never printed, logged or written anywhere.
  * `state.mjs save` seals changed credentials before committing; commit with `state.mjs save` after a manual seal.
+ * Without age, each command exits 11 with the command that installs it (apt-get, sudo apt-get, docker exec -u root on the
+ * docker host, or winget), for the session to run; only when none applies does it exit 10 for the user.
  */
 import { readFileSync } from 'node:fs'
-import { ageInstallHint, ageVersion, keygen, recipientOf, seal, sealedEntries, sealPlace, statusOf, unseal } from './lib/secrets.mjs'
-import { absPath, die, info, needUser, ok, parseArgs, roleFromArgs, warn } from './lib/team.mjs'
+import { ageInstallHere, ageVersion, keygen, recipientOf, seal, sealedEntries, sealPlace, statusOf, unseal } from './lib/secrets.mjs'
+import { absPath, die, info, needUser, ok, parseArgs, roleFromArgs, selfStep, warn } from './lib/team.mjs'
 
 const args = parseArgs(process.argv.slice(2))
 const cmd = args._[0]
 const dry = !!args['dry-run']
 const force = !!args.force
 
-function needAge() {
+/** age's version; without age, exit 11 with the install command for the session, or 10 when only the user can install it. */
+function needAge(r = null) {
   const v = ageVersion()
-  if (!v) needUser(['The age tool (age and age-keygen) is not on PATH.', ...ageInstallHint(), 'Then run this step again.'])
-  return v
+  if (v) return v
+  const p = ageInstallHere(r)
+  if (p.here || p.host) {
+    selfStep('age (age and age-keygen) is not installed. Install it now; this is not a step for the user:', [
+      ...(p.here ? [`on this machine:  ${p.here}`] : []),
+      ...(p.host ? [`${p.here ? 'or ' : ''}from the docker host:  ${p.host}`, `  (the same through the kit: host.mjs exec --n ${r?.n ?? 'N'} --root -- "apt-get update && apt-get install -y age"; on Windows it goes through WSL)`] : []),
+      ...p.after,
+    ])
+  }
+  needUser(['The age tool (age and age-keygen) is not on PATH, and this machine has no way to install it unattended.', ...p.user])
 }
 
 function load() {
@@ -52,7 +64,13 @@ if (cmd === 'keygen') {
   process.exit(0)
 }
 
-const { entries, recipient, place } = load()
+if (cmd === 'age') {
+  const r = args.role ? roleFromArgs(args).r : null
+  ok(`age: ${needAge(r)}`)
+  process.exit(0)
+}
+
+const { r: role, entries, recipient, place } = load()
 if (cmd !== 'status' && entries.length === 0) {
   warn('no secrets entry has "sealed": true; nothing to do')
   process.exit(0)
@@ -70,7 +88,7 @@ switch (cmd) {
   }
   case 'seal': {
     if (!recipient) die('the team file has no "secretsRecipient" (the age public key to seal to); see secrets.mjs keygen')
-    needAge()
+    needAge(role)
     let res
     try { res = seal(entries, recipient, { force, dry, place }) } catch (e) { die(e.message) }
     if (res.sealed.length) ok(`${dry ? 'would seal' : 'sealed'}: ${res.sealed.join(', ')}`)
@@ -84,7 +102,7 @@ switch (cmd) {
   }
   case 'unseal': {
     if (typeof args.identity !== 'string' && args.identity !== true) die('pass --identity - (master key on stdin) or --identity <file>')
-    needAge()
+    needAge(role)
     let key
     try { key = args.identity === '-' || args.identity === true ? readFileSync(0) : readFileSync(absPath(args.identity)) } catch (e) { die(`cannot read the master key: ${e.code ?? e.message}`) }
     let res
@@ -96,6 +114,6 @@ switch (cmd) {
     break
   }
   default:
-    console.error('usage: secrets.mjs status|seal|unseal --role leader|worker [--n N] [--team team.json] [--identity -|<file>] [--force] [--dry-run]\n       secrets.mjs keygen --out <file>')
+    console.error('usage: secrets.mjs status|seal|unseal|age --role leader|worker [--n N] [--team team.json] [--identity -|<file>] [--force] [--dry-run]\n       secrets.mjs keygen --out <file>')
     process.exit(2)
 }

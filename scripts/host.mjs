@@ -14,7 +14,8 @@
  *       remove the new container, rename <container>-old back and start it, put the old image tag back
  *   node host.mjs finish   --n N [--yes]    after acceptance: forget the rebuild record (old container and volumes stay until you remove them)
  *   node host.mjs copy-kit --n N [--yes]    copy this kit into the container at /opt/worker-kit (for the inside steps)
- *   node host.mjs exec     --n N -- <command line>   run one non-interactive command in the container (runs without --yes)
+ *   node host.mjs exec     --n N [--root] -- <command line>   run one non-interactive command in the container (runs without --yes);
+ *       --root runs it as the container's root (installing a package)
  *
  * Settings: roles.worker.runtime.docker (merged with members.<N>) in the team file.
  * The rebuild record lives at ~/.claude-worker-kit/<container>.json on this machine; the build log at
@@ -267,9 +268,10 @@ function copyKit() {
 /** Run one command inside the container (non-interactive): host.mjs exec --n N -- <command line> */
 function execIn() {
   const i = process.argv.indexOf('--')
-  if (i < 0) die('usage: host.mjs exec --n N -- <command line>')
+  if (i < 0) die('usage: host.mjs exec --n N [--root] -- <command line>')
   const line = process.argv.slice(i + 1).join(' ')
-  const res = sh(`docker exec ${d.workDir ? `-w ${q(d.workDir)} ` : ''}${q(C)} bash -lc ${q(line)}`, { mutate: false })
+  const root = process.argv.slice(0, i).includes('--root') ? '-u root ' : ''
+  const res = sh(`docker exec ${root}${d.workDir ? `-w ${q(d.workDir)} ` : ''}${q(C)} bash -lc ${q(line)}`, { mutate: false })
   process.exit(res.status)
 }
 

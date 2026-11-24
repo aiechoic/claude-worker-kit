@@ -238,6 +238,14 @@ export function needUser(lines) {
   process.exit(10)
 }
 
+/** A step the session does itself (installing a tool): print the commands and exit 11; the skill runs one, then the same step again. */
+export function selfStep(title, lines) {
+  console.log(`\n🔧  ${title}`)
+  for (const l of [].concat(lines)) console.log(`   ${l}`)
+  console.log('   Then run the same step again.')
+  process.exit(11)
+}
+
 /** Where this session's directory in the state repo lives. */
 export function stateDir(r) {
   if (!r.stateClone) die(`roles.${r.role}.stateClone is missing`)

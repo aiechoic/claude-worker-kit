@@ -254,3 +254,13 @@ test('--resume without a record, and a record from an older kit', { skip: win },
   assert.equal(r.status, 1)
   assert.match(r.stderr, /finish or roll it back first/)
 })
+
+test('exec --root runs the command as the container\'s root', { skip: win }, () => {
+  const s = sandbox()
+  let r = s.run('exec', '--root', '--', 'apt-get update && apt-get install -y age')
+  assert.equal(r.status, 0, r.stderr + r.stdout)
+  // sandbox().run puts --n and --team last, so they end up in the command line too
+  assert.match(s.calls().at(-1), /^exec -u root worker-7 bash -lc apt-get update && apt-get install -y age /)
+  r = s.run('exec', '--', 'id')
+  assert.match(s.calls().at(-1), /^exec worker-7 bash -lc id /)
+})

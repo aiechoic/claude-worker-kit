@@ -29,7 +29,7 @@ S restore
 - The script links (Linux) or copies (Windows) the memory directory.
 - It adds `@…/ROLE.md` to the manual.
 - It lists the credentials still to fill, and the sealed ones it found.
-- If there are sealed credentials, the user unseals them now with the master key, from a terminal of their own 🖐 ([secrets.md](secrets.md#unseal-on-a-new-machine-restore)). ⛔ Not through the session.
+- If there are sealed credentials, first make sure age is installed (`secrets.mjs age --role leader --team …`; on exit 11 run the printed install command yourself, [secrets.md](secrets.md#install-age)). Then the user unseals them with the master key, from a terminal of their own 🖐 ([secrets.md](secrets.md#unseal-on-a-new-machine-restore)). ⛔ Not through the session.
 - Read `session-state.md` afterwards.
 
 ## 4. GitHub, lark-cli, channel

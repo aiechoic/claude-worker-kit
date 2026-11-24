@@ -7,13 +7,46 @@
 // (SHA-256 of the credential and of its .age file); it never leaves this machine.
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { absPath, isWin, secretsOf, stateDir } from './team.mjs'
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
-const AGE = process.env.WORKER_KIT_AGE || 'age'
-const AGE_KEYGEN = process.env.WORKER_KIT_AGE_KEYGEN || 'age-keygen'
+
+const isFile = f => { try { return statSync(f).isFile() } catch { return false } }
+
+/** Whether `cmd` is on PATH (with PATHEXT on Windows); nothing is run. */
+export function onPath(cmd, env = process.env, win = isWin) {
+  const dirs = (env.PATH ?? env.Path ?? '').split(win ? ';' : ':').filter(Boolean)
+  const exts = win ? ['', ...(env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';').filter(Boolean)] : ['']
+  return dirs.some(d => exts.some(x => isFile(join(d, cmd + x)) || isFile(join(d, cmd + x.toLowerCase()))))
+}
+
+/**
+ * Where winget put age, for a terminal or session that was open before the install and so does not have it on PATH:
+ * %LOCALAPPDATA%\Microsoft\WinGet\Links, else the package folder FiloSottile.age_* under WinGet\Packages.
+ * @returns {{ age: string, keygen: string } | null} absolute paths
+ */
+export function wingetAge(localAppData) {
+  if (!localAppData) return null
+  const winget = join(localAppData, 'Microsoft', 'WinGet')
+  const pair = d => (isFile(join(d, 'age.exe')) && isFile(join(d, 'age-keygen.exe')) ? { age: join(d, 'age.exe'), keygen: join(d, 'age-keygen.exe') } : null)
+  const found = pair(join(winget, 'Links'))
+  if (found) return found
+  const ls = d => { try { return readdirSync(d, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => join(d, e.name)) } catch { return [] } }
+  const search = (d, depth) => pair(d) ?? (depth > 0 ? ls(d).reduce((hit, sub) => hit ?? search(sub, depth - 1), null) : null)
+  return ls(join(winget, 'Packages')).filter(d => basename(d).startsWith('FiloSottile.age_')).reduce((hit, d) => hit ?? search(d, 2), null)
+}
+
+/** age and age-keygen: $WORKER_KIT_AGE / $WORKER_KIT_AGE_KEYGEN, else from PATH, else (Windows) where winget put them. */
+export function ageBins(env = process.env, win = isWin) {
+  if (env.WORKER_KIT_AGE || env.WORKER_KIT_AGE_KEYGEN) return { age: env.WORKER_KIT_AGE || 'age', keygen: env.WORKER_KIT_AGE_KEYGEN || 'age-keygen' }
+  if (onPath('age', env, win) && onPath('age-keygen', env, win)) return { age: 'age', keygen: 'age-keygen' }
+  return (win && wingetAge(env.LOCALAPPDATA)) || { age: 'age', keygen: 'age-keygen' }
+}
+let bins = null
+const AGE = () => (bins ??= ageBins()).age
+const AGE_KEYGEN = () => (bins ??= ageBins()).keygen
 
 /** The public key secrets are sealed to: the role's `secretsRecipient`, else the team file's top-level one. */
 export function recipientOf(team, r) {
@@ -84,16 +117,51 @@ export function ensureBinaryAttr(root) {
 
 /** age's version, or null when the age binaries are not installed. */
 export function ageVersion() {
-  const a = spawnSync(AGE, ['--version'], { encoding: 'utf8' })
-  const k = spawnSync(AGE_KEYGEN, ['--version'], { encoding: 'utf8' })
+  const a = spawnSync(AGE(), ['--version'], { encoding: 'utf8' })
+  const k = spawnSync(AGE_KEYGEN(), ['--version'], { encoding: 'utf8' })
   if (a.error || a.status !== 0 || k.error || k.status !== 0) return null
   return a.stdout.trim()
 }
 
-export function ageInstallHint() {
-  return isWin
-    ? ['Install the official age tool:', '  winget install FiloSottile.age', 'A terminal or session that was already running does not see it on PATH: open a new terminal, and restart the session (team-claude) if the session runs this script.']
-    : ['Install the official age tool (1.1 or later):', '  sudo apt install age        # Debian / Ubuntu', '  or download a release from https://github.com/FiloSottile/age/releases and put age and age-keygen on PATH']
+const APT = 'apt-get update && apt-get install -y age'
+export const WINGET = 'winget install --id FiloSottile.age -e --accept-source-agreements --accept-package-agreements'
+
+/**
+ * How to install age where it is missing. The session runs `here` (on this machine) or `host` (on the docker host, for
+ * a docker member) itself; only when neither is possible is it a step for the user (`user`).
+ * @param ctx { win, has(cmd) → bool, root, sudoOk() → bool (passwordless sudo), container (docker member) | null, inContainer }
+ * @returns {{ here: string | null, host: string | null, after: string[], user: string[] }}
+ */
+export function ageInstallPlan({ win, has, root, sudoOk, container = null, inContainer = false }) {
+  if (win) {
+    return {
+      here: has('winget') ? WINGET : null,
+      host: null,
+      after: ['Terminals that were open before do not have age on PATH; the kit\'s scripts find it in WinGet\'s folder without a restart. A terminal the user runs unseal in must be opened after the install.'],
+      user: ['Install the official age tool:', `  ${WINGET}`, '(no winget: an official release from https://github.com/FiloSottile/age/releases, with age.exe and age-keygen.exe on PATH)', 'Then open a new terminal.'],
+    }
+  }
+  const apt = has('apt-get')
+  const here = !apt ? null : root ? APT : has('sudo') && sudoOk() ? `sudo apt-get update && sudo apt-get install -y age` : null
+  return {
+    here,
+    // the container's root needs no sudo; a container without apt-get cannot use it
+    host: container && (!inContainer || apt) ? `docker exec -u root ${container} sh -c '${APT}'` : null,
+    after: [],
+    user: ['Install the official age tool (1.1 or later):', `  sudo ${APT.replace('&& apt-get', '&& sudo apt-get')}        # Debian / Ubuntu`, '  or an official release from https://github.com/FiloSottile/age/releases, with age and age-keygen on PATH', 'Then run this step again.'],
+  }
+}
+
+/** ageInstallPlan for this machine; `r` (the role, may be null) says whether the member is a docker worker. */
+export function ageInstallHere(r) {
+  return ageInstallPlan({
+    win: isWin,
+    has: c => onPath(c),
+    root: process.getuid?.() === 0,
+    sudoOk: () => spawnSync('sudo', ['-n', 'true'], { stdio: 'ignore' }).status === 0,
+    container: r?.runtimeMode === 'docker' ? r.runtime?.docker?.container ?? null : null,
+    inContainer: existsSync('/.dockerenv'),
+  })
 }
 
 function tmpName(file) {
@@ -130,7 +198,7 @@ export function seal(entries, recipient, { force = false, dry = false, place = n
     const tmp = tmpName(e.file)
     try {
       // age reads the credential file itself; it never passes through this process
-      const r = spawnSync(AGE, ['--encrypt', '--recipient', recipient, '--output', tmp, e.path], { encoding: 'utf8' })
+      const r = spawnSync(AGE(), ['--encrypt', '--recipient', recipient, '--output', tmp, e.path], { encoding: 'utf8' })
       if (r.error) throw new Error(`age: ${r.error.message}`)
       if (r.status !== 0) throw new Error(`age could not seal "${e.name}": ${r.stderr.trim()}`)
       renameSync(tmp, e.file)
@@ -170,7 +238,7 @@ export function unseal(entries, identity, { force = false, dry = false, place = 
     for (const e of entries) {
       if (!existsSync(e.file)) { res.notSealed.push(e.id); continue }
       // the master key goes to age on stdin (-i -); the plaintext comes back on stdout
-      const r = spawnSync(AGE, ['--decrypt', '--identity', '-', e.file], { input: key, maxBuffer: 64 * 1024 * 1024 })
+      const r = spawnSync(AGE(), ['--decrypt', '--identity', '-', e.file], { input: key, maxBuffer: 64 * 1024 * 1024 })
       if (r.error) throw new Error(`age: ${r.error.message}`)
       if (r.status !== 0) {
         r.stdout?.fill(0)
@@ -222,10 +290,10 @@ export function statusOf(entries) {
 export function keygen(out) {
   if (existsSync(out)) throw new Error(`${out} already exists; not overwriting a key`)
   mkdirSync(dirname(out), { recursive: true })
-  const r = spawnSync(AGE_KEYGEN, ['-o', out], { encoding: 'utf8' })
+  const r = spawnSync(AGE_KEYGEN(), ['-o', out], { encoding: 'utf8' })
   if (r.error) throw new Error(`age-keygen: ${r.error.message}`)
   if (r.status !== 0) throw new Error(`age-keygen failed: ${r.stderr.trim()}`)
-  const y = spawnSync(AGE_KEYGEN, ['-y', out], { encoding: 'utf8' })
+  const y = spawnSync(AGE_KEYGEN(), ['-y', out], { encoding: 'utf8' })
   if (y.status !== 0) throw new Error(`age-keygen -y failed: ${y.stderr.trim()}`)
   return y.stdout.trim()
 }

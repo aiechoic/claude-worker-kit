@@ -18,7 +18,7 @@ Run these inside the worker's container. Either the host session runs them throu
    - Memory is linked to `<stateClone>/<dir>/memory`.
    - The manual imports `ROLE.md`. If the project's init rewrote the manual, `restore` adds the import again.
    - Then read `session-state.md`.
-3. **Sealed credentials**: if `restore` listed sealed credentials, the user unseals them with the master key, from a terminal in the container 🖐 (`docker exec -it <container> bash`, then the Linux command in [secrets.md](secrets.md#unseal-on-a-new-machine-restore)). ⛔ The master key never goes through the session. Without sealed files, go on: each credential is filled by hand below.
+3. **Sealed credentials**: if `restore` listed sealed credentials, first make sure age is in the container: `node $KIT/scripts/secrets.mjs age A`; on exit 11 run the install command it prints yourself ([secrets.md](secrets.md#install-age)). Then the user unseals them with the master key, from a terminal in the container 🖐 (`docker exec -it <container> bash`, then the Linux command in [secrets.md](secrets.md#unseal-on-a-new-machine-restore)). ⛔ The master key never goes through the session. Without sealed files, go on: each credential is filled by hand below.
 
 ## 2. Feishu
 
