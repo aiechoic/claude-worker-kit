@@ -20,6 +20,10 @@
         "appSecretFile": "~/example/.creds/leader-app-secret"
       },
       "chats": { "status": "oc_example_leader_status" },
+      "setup": [
+        { "name": "workspace file", "check": "test -f ~/example/leader/src/workspace.cfg", "run": "bash {stateClone}/leader/tools/workspace.sh" }
+      ],
+      "gh": { "scopes": ["repo", "read:org"], "admin": ["git@github.com:example-org/example-workers.git"] },
       "secrets": [
         { "name": "leader bot App Secret", "path": "{channel.appSecretFile}", "by": "user", "note": "Feishu open platform → the leader app → Credentials" },
         { "name": "GitHub CLI login", "check": "gh auth status", "by": "user", "note": "gh auth login" },

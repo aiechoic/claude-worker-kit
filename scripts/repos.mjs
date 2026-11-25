@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 /**
  * Deploy keys and clones of a member's repos: its state repo (team file: stateRepo, deployKey) and the repos its
- * ROLE.md lists under "## Repositories" (references/team-file.md#rolemd-repositories).
+ * ROLE.md lists under "## Repositories" (references/team-file.md#rolemd-repositories); with roleFile: null, the manual's
+ * section. A row without a key is cloned over https with the GitHub CLI's login (token only in $GH_TOKEN).
+ * Then the role's setup steps (team file: setup) for what is particular to the project.
  *
  *   node repos.mjs list  --role … [--n N]            the repos, with whether each key and clone exists
  *   node repos.mjs keys  --role … [--n N] [--yes]    make each missing deploy key in the member, add each public key to
  *                                                    its GitHub repo with the user's gh login (state repo first)
  *   node repos.mjs clone --role … [--n N] [--yes]    write the ssh Host blocks, clone the ROLE.md repos that are missing
+ *   node repos.mjs setup --role … [--n N] [--yes]    the setup steps in order: check passes → skipped; else run, then
+ *                                                    check again. The first failing step stops the rest
  *   node repos.mjs ensure-key --key <path> --comment <text> [--check]   (inside the member) make a key if missing, print the .pub line
  *
  * Common: --team <team.json>, --state-only (keys: only the state repo, before it is cloned).
@@ -19,9 +23,9 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { hostname } from 'node:os'
 import { dockerHost, q } from './lib/docker.mjs'
-import { addDeployKey, needGh, repoSlug } from './lib/gh.mjs'
+import { addDeployKey, cloneToken, needGh, repoSlug, tokenGitArgs } from './lib/gh.mjs'
 import { cloneUrl, isLocalRepo, parseRepoTable, writeSshConfig } from './lib/repos.mjs'
-import { absPath, die, info, ok, parseArgs, roleFilePath, roleFromArgs, warn } from './lib/team.mjs'
+import { absPath, die, info, isWin, ok, parseArgs, roleFilePath, roleFromArgs, warn } from './lib/team.mjs'
 
 const args = parseArgs(process.argv.slice(2))
 const cmd = args._[0]
@@ -62,8 +66,9 @@ function memberKey(key, comment, check = false) {
   return H.runScript(`node ${KIT_INSIDE}/scripts/repos.mjs ensure-key --key ${q(key)}${check ? ' --check' : ` --comment ${q(comment)}`}`, { capture: true })
 }
 
+/** The file with the "## Repositories" section: the role file, or the manual when the role has none (roleFile: null). */
 function roleText() {
-  const f = roleFilePath(r)
+  const f = roleFilePath(r) ?? (r.workDir && absPath(r.manual ?? 'CLAUDE.md', r.workDir))
   if (!f) return null
   if (!docker) return existsSync(f) ? readFileSync(f, 'utf8') : null
   const res = H.runScript(`cat ${q(f)} 2>/dev/null`, { capture: true })
@@ -73,7 +78,7 @@ function roleText() {
 /** The state repo, then the ROLE.md repos (when the state repo is cloned already). */
 function repos({ stateOnly = false } = {}) {
   const list = []
-  if (r.stateRepo && r.deployKey) list.push({ repo: r.stateRepo, clone: r.stateClone, key: r.deployKey, host: null, access: 'write', state: true })
+  if (r.stateRepo) list.push({ repo: r.stateRepo, clone: r.stateClone, key: r.deployKey ?? null, host: null, access: 'write', state: true })
   if (stateOnly) return { list, role: false }
   const text = roleText()
   if (text === null) return { list, role: false }
@@ -84,14 +89,16 @@ function repos({ stateOnly = false } = {}) {
 function list() {
   const { list: rows, role } = repos()
   for (const x of rows) {
-    const key = memberKey(x.key, null, true).stdout
-    info(`${x.state ? 'state repo ' : ''}${x.repo} → ${x.clone}; key ${x.key} ${key === 'missing' ? '(missing)' : '(present)'}; ${x.host ? `ssh Host ${x.host}; ` : ''}${x.access}`)
+    const key = x.key ? `key ${x.key} ${memberKey(x.key, null, true).stdout === 'missing' ? '(missing)' : '(present)'}` : 'no key: https with the gh login'
+    info(`${x.state ? 'state repo ' : ''}${x.repo} → ${x.clone}; ${key}; ${x.host ? `ssh Host ${x.host}; ` : ''}${x.access}`)
   }
   if (!role) info(`ROLE.md is not there yet (state repo not cloned): only the state repo is listed`)
 }
 
 function keys() {
-  const { list: rows, role } = repos({ stateOnly: !!args['state-only'] })
+  const { list: all, role } = repos({ stateOnly: !!args['state-only'] })
+  for (const x of all.filter(x => !x.key && !isLocalRepo(x.repo))) info(`${x.repo}: no deploy key; cloned over https with the gh login`)
+  const rows = all.filter(x => x.key)
   if (!rows.length) { ok('no repos with deploy keys for this member'); return }
   const gh = needGh('adding deploy keys')
   const where = docker ? H.C : hostname()
@@ -132,27 +139,66 @@ function clone() {
   if (ssh.changed) (yes ? ok : info)(`${yes ? 'wrote' : '[plan] write'} ssh Host blocks for ${extra.filter(x => x.host).map(x => x.host).join(', ')} in ${ssh.file}`)
   for (const h of ssh.kept) warn(`${ssh.file} already has a Host ${h} written by hand; left as it is`)
   let failed = 0
+  let token = null
   for (const x of extra) {
     const dir = absPath(x.clone)
     if (existsSync(join(dir, '.git'))) { ok(`${x.clone}: already cloned`); continue }
-    const url = isLocalRepo(x.repo) ? x.repo : cloneUrl(x, repoSlug(x.repo))
-    const sshCmd = `ssh -i ${absPath(x.key).replaceAll('\\', '/')} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new`
-    const a = ['clone', '-q', ...(x.host || isLocalRepo(x.repo) ? [] : ['-c', `core.sshCommand=${sshCmd}`]), url, dir]
-    if (!yes) { console.log(`  [plan] git ${a.join(' ')}`); continue }
-    if (!isLocalRepo(x.repo) && !existsSync(absPath(x.key))) { warn(`${x.key} is missing: repos.mjs keys first`); failed++; continue }
+    const local = isLocalRepo(x.repo)
+    const https = !local && !x.key
+    const url = local ? x.repo : cloneUrl(x, repoSlug(x.repo))
+    const sshCmd = x.key && `ssh -i ${absPath(x.key).replaceAll('\\', '/')} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new`
+    const a = ['clone', '-q', ...(x.host || local || https ? [] : ['-c', `core.sshCommand=${sshCmd}`]), url, dir]
+    if (!yes) { console.log(`  [plan] git ${a.join(' ')}${https ? '   (https with the gh login)' : ''}`); continue }
+    if (!local && x.key && !existsSync(absPath(x.key))) { warn(`${x.key} is missing: repos.mjs keys first`); failed++; continue }
+    // the token only in the environment of this git, read by the credential helper; the remote stays the plain URL
+    if (https && token === null) token = cloneToken(x.repo)
     mkdirSync(dirname(dir), { recursive: true })
-    const res = spawnSync('git', a, { encoding: 'utf8', stdio: ['ignore', 'inherit', 'pipe'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
-    if (res.status !== 0) { warn(`clone of ${x.repo} failed: ${(res.stderr ?? '').trim().split('\n')[0]} (deploy key added? repos.mjs keys)`); failed++ }
+    const res = spawnSync('git', https ? [...tokenGitArgs(), ...a] : a, { encoding: 'utf8', stdio: ['ignore', 'inherit', 'pipe'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...(https ? { GH_TOKEN: token } : {}) } })
+    const why = (res.stderr ?? '').trim().split('\n')[0]
+    if (res.status !== 0) { warn(`clone of ${x.repo} failed: ${token ? why.replaceAll(token, '***') : why} (${https ? 'does the gh login have access to it?' : 'deploy key added? repos.mjs keys'})`); failed++ }
     else ok(`${x.repo} → ${x.clone}`)
   }
   if (failed) process.exit(1)
 }
 
+/**
+ * The role's setup steps (team file: setup, a list of { name, run, check?, cwd? }), in order, in the member's work
+ * directory. Their output is printed as it is: a step must not print credentials.
+ */
+function setup() {
+  if (docker) {
+    const res = H.runScript(`node ${KIT_INSIDE}/scripts/repos.mjs setup ${roleArgs} --team ${q(innerTeam)} --here${yes ? ' --yes' : ''}`)
+    process.exit(res.status)
+  }
+  const steps = [].concat(r.setup ?? [])
+  if (!steps.length) { ok(`no setup steps for ${label} (team file: setup)`); return }
+  const env = { ...process.env, WORKER_KIT_ROLE: r.role, WORKER_KIT_N: r.n ? String(r.n) : '', WORKER_KIT_WORK_DIR: r.workDir ?? '', WORKER_KIT_STATE_CLONE: r.stateClone ? absPath(r.stateClone) : '' }
+  const sh = (line, cwd) => spawnSync(line, { shell: isWin ? true : '/bin/bash', cwd, env, stdio: ['ignore', 'inherit', 'inherit'] }).status
+  steps.forEach((s, i) => {
+    const name = `setup ${i + 1} of ${steps.length} "${s?.name ?? '(no name)'}"`
+    if (!s || typeof s.run !== 'string') die(`${name}: needs a "run" command`)
+    const cwd = absPath(s.cwd ?? '.', r.workDir)
+    if (!existsSync(cwd)) die(`${name}: the directory ${cwd} is missing`)
+    if (s.check) {
+      console.log(`${name}: check  ${s.check}`)
+      if (sh(s.check, cwd) === 0) { ok(`${name}: in place`); return }
+    }
+    if (!yes) { console.log(`  [plan] ${name}: run  ${s.run}`); return }
+    console.log(`${name}: run  ${s.run}`)
+    const st = sh(s.run, cwd)
+    if (st !== 0) die(`${name} failed (exit ${st}); the steps after it did not run. Fix the cause, then run setup again`)
+    if (s.check && sh(s.check, cwd) !== 0) die(`${name}: ran, but its check still fails: ${s.check}. The steps after it did not run`)
+    ok(`${name}: done`)
+  })
+  if (!yes) console.log('\nNothing changed. Add --yes to run the steps.')
+}
+
 switch (cmd) {
+  case 'setup': setup(); break
   case 'list': list(); break
   case 'keys': keys(); break
   case 'clone': clone(); break
   default:
-    console.error('usage: repos.mjs list|keys|clone --role leader|worker [--n N] [--team team.json] [--yes] [--state-only]\n       repos.mjs ensure-key --key <path> --comment <text> [--check]')
+    console.error('usage: repos.mjs list|keys|clone|setup --role leader|worker [--n N] [--team team.json] [--yes] [--state-only]\n       repos.mjs ensure-key --key <path> --comment <text> [--check]')
     process.exit(2)
 }

@@ -1,10 +1,14 @@
 # Leader: set up or restore
 
-The leader runs natively, in a Linux shell or in a Windows session. Run all steps in the leader's work directory. `S` = `node "$KIT/scripts/state.mjs" --role leader --team <team.json>`.
+The leader runs natively (a Linux shell or a Windows session) or in a docker container. A container leader is driven from its docker host: see [Leader in a container](#leader-in-a-container), which runs the same steps inside. Natively, run all steps in the leader's work directory. `S` = `node "$KIT/scripts/state.mjs" --role leader --team <team.json>`, `A` = `--role leader --team <team.json>`.
+
+The user's part is the same three steps as for a worker: naming the master key file, `! gh auth login`, and (in a container) logging in to Claude there. Everything else is the session's.
 
 ## 1. The state repo and the team file
 
-- If the leader's state repo is not cloned yet, clone it with the user's GitHub access (`gh auth login` first if `gh auth status` fails, 🖐). Or use the leader's deploy key: `state.mjs clone --repo <url> --to <stateClone> --key <deployKey>`.
+- Clone it: `node "$KIT/scripts/state.mjs" clone --repo <url> --to <stateClone> [--key <deployKey>]`.
+  - With a deploy key (`deployKey` in the team file): `repos.mjs keys A --state-only --yes` first makes the key and adds it with the user's gh login.
+  - Without one: the clone goes over https with the user's gh login. If gh is not logged in: exit 10, the user runs `! gh auth login`.
 - Every later step reads `<stateClone>/team.json`.
 
 ## 2. Only one leader
@@ -27,34 +31,118 @@ S restore
 ```
 
 - The script links (Linux) or copies (Windows) the memory directory.
-- It adds `@…/ROLE.md` to the manual.
-- It lists the credentials still to fill, and the sealed ones it found.
-- If there are sealed credentials, first make sure age is installed (`secrets.mjs age --role leader --team …`; on exit 11 run the printed install command yourself, [secrets.md](secrets.md#install-age)). Then unseal with the master key file the user names: `secrets.mjs unseal --role leader --team … --identity <file>` ⛔ without opening that file. The user may also pipe it in with the master key, from a terminal of their own 🖐 ([secrets.md](secrets.md#unseal-on-a-new-machine-restore)). ⛔ Not through the session.
+- It adds `@…/ROLE.md` to the manual (unless `roleFile` is `null`: then the manual itself is the leader's).
+- It lists the credentials still to fill, the sealed ones it found, the repos and the setup steps.
+- If there are sealed credentials:
+  1. Make sure age is installed: `secrets.mjs age A`. On exit 11, run the printed install command yourself ([secrets.md](secrets.md#install-age)).
+  2. Unseal with the master key file the user names: `secrets.mjs unseal A --identity <file>`. ⛔ Do not open that file.
+  3. The user may instead pipe the key in from a terminal of their own 🖐 ([secrets.md](secrets.md#unseal-on-a-new-machine-restore)). ⛔ Not through the session.
 - Read `session-state.md` afterwards.
 
-## 4. GitHub, lark-cli, channel
+## 4. The leader's repos and the project's setup
 
-1. **GitHub CLI**: `gh auth status`. If that fails, the user runs `gh auth login` 🖐. Adding workers' deploy keys needs admin rights on the workers' state repo.
-2. **App Secret file**: `node "$KIT/scripts/channel.mjs" check-secret --role leader --team …`. After an unseal it is already there. If it exits 10, the user writes the secret file as shown 🖐.
-3. **lark-cli**: `node "$KIT/scripts/lark.mjs" add --role leader --team …`. The secret is piped from the App Secret file. Then run `lark.mjs check`.
+The leader's code repos are listed in its role file under `## Repositories` (or, with `roleFile: null`, in the manual), the same table as a worker's ([team-file.md](team-file.md#rolemd-repositories)). A row with an empty `key` is cloned over https with the gh login. No section means no extra repos.
+
+```
+node "$KIT/scripts/repos.mjs" keys A --yes     # deploy keys for rows that have a key (none: nothing to do)
+node "$KIT/scripts/repos.mjs" clone A --yes    # each repo where the table says
+node "$KIT/scripts/repos.mjs" setup A --yes    # the team file's setup steps, in order
+```
+
+- `setup` covers what is particular to the project, for example a workspace file that is not committed. The steps live in the team file as `setup` ([team-file.md](team-file.md#setup-steps)), and their scripts in the project's own state repo.
+- A step whose `check` passes is skipped. A failing step is reported by number and name, and the steps after it do not run.
+- The output of each step is printed as it is, so ⛔ a setup script must not print credentials.
+- The channel checkout is not in the table: step 5 installs it.
+
+## 5. GitHub, lark-cli, channel
+
+1. **GitHub CLI**: `gh auth status`. If that fails, the user runs `! gh auth login` 🖐. Adding workers' deploy keys needs the `repo` scope and admin rights on the workers' state repo. `verify` names a missing scope (fix: `gh auth refresh -h github.com -s <scope>`) or missing admin rights (team file: `gh`).
+2. **App Secret file**: `node "$KIT/scripts/channel.mjs" check-secret A`. After an unseal it is already there. If it exits 10, the user writes the secret file as shown 🖐.
+3. **lark-cli**: `node "$KIT/scripts/lark.mjs" add A`. The secret is piped from the App Secret file. Then run `lark.mjs check A`.
 4. **Channel**, in this order:
-   1. `channel.mjs install --role leader …` clones the public channel repo over https (skipping a global https→ssh rewrite) and runs `npm ci`.
-   2. `channel.mjs place --role leader …` puts the saved config back.
-   3. `channel.mjs launcher …` installs `team-claude` against that config. If a `team-claude` already points at another checkout or config, it stops and shows it; `--replace` after the user agrees.
-   4. `channel.mjs doctor …` checks the bot's permissions.
+   1. `channel.mjs install A` clones the public channel repo over https (skipping a global https→ssh rewrite) and runs `npm ci`.
+   2. `channel.mjs place A` puts the saved config back.
+   3. `channel.mjs launcher A` installs `team-claude` against that config. If a `team-claude` already points at another checkout or config, it stops and shows it; `--replace` after the user agrees.
+   4. `channel.mjs doctor A` checks the bot's permissions.
 5. **Project MCP servers and tokens**: go through `secrets` in the team file one by one.
-   - Sealed entries are already back. `secrets.mjs status --role leader --team …` lists them.
+   - Sealed entries are already back. `secrets.mjs status A` lists them.
    - For each other `path` entry the user puts the file there 🖐.
    - For each `check` entry, run the check. If it fails, show the `note` and the user fixes it 🖐 (for example `claude mcp add …` with a token they paste).
 
-## 5. Accept
+## 6. Accept
 
 ```
-node "$KIT/scripts/verify.mjs" --role leader --team …
+node "$KIT/scripts/verify.mjs" A
 S save -m "leader restored on <machine>"
 ```
 
 The user then starts the leader with `team-claude` in the work directory 🖐.
+
+## Leader in a container
+
+The leader's role in the team file has `runtime.docker`, like a worker's ([team-file.md](team-file.md#docker-runtime)), without `--n`. A session on the docker host drives it. In Windows, that is a session in WSL or in PowerShell with Docker Desktop. `H` = `node "$KIT/scripts/host.mjs" --role leader --team <team.json>`. Inside the container `KIT` is `/opt/worker-kit`, and `A` is `--role leader --team <stateClone>/team.json`.
+
+### Only one leader, even while rebuilding
+
+- ⛔ `host.mjs` does not stop a running leader container. `rebuild`, `rollback` and `down` stop with exit 10 while it runs. The old session first runs `S release` and is closed, or the user confirms that container is not the live leader. Only then add `--stop-running`.
+- ⛔ Never stop a container to "make room" on your own judgment.
+- A leader on another machine is caught by the lock (step 2: exit 3).
+- The rebuild record is `~/.claude-worker-kit/<container>.json`, one file per container, and it names its member. A record of another member under the same container name stops `host.mjs`.
+
+### The container
+
+With an image build in the team file (`buildContext` or `buildRepo`, `dockerfile`, `compose`), it is the same as for a worker:
+
+```
+H status                # containers, build directory, download speed
+H rebuild               # the plan; then --yes after the user agrees
+```
+
+The first time, when there is no old container, `rebuild --yes` builds and starts one. `H up --yes` / `H down --yes` start and stop it later under its compose project. `rebuild` stops for the user's step: log in to Claude in the container (`docker exec -it <container> bash`, `claude`, log in, exit).
+
+Without an image build for the leader, the project writes one first. The container needs:
+
+- `node` (20 or later), `git`, `gh`, `age`, `ssh-keygen`, `curl`, and Claude Code.
+- A user that is not root, whose home is a named volume, so memory and logins survive a rebuild.
+- The work directory and the state clone on a volume too.
+- The host credential directory mounted read-only, when the team file has `credDir`.
+- `docker compose` with `container_name` set to the team file's `container`.
+
+### The inside steps, from the host
+
+```
+H copy-kit --yes                     # the kit to /opt/worker-kit
+H gh-login --yes                     # the container's gh logged in with the host's gh login
+H exec -- "node $KIT/scripts/state.mjs clone --repo <stateRepo> --to <stateClone>"
+H exec -- "node $KIT/scripts/state.mjs lock A --session '<container>@<docker host>'"
+H exec -- "node $KIT/scripts/state.mjs restore A"
+H unseal --identity <the master key file the user named>    # when restore listed sealed credentials
+node "$KIT/scripts/repos.mjs" keys --role leader --team <team.json> --yes   # on the host
+node "$KIT/scripts/repos.mjs" clone --role leader --team <team.json> --yes
+node "$KIT/scripts/repos.mjs" setup --role leader --team <team.json> --yes
+```
+
+- `gh-login` reads the host's gh token and pipes it into `gh auth login --with-token` in the container. The token is never on a command line or in the output. Then it runs `gh auth setup-git`, so git there uses it for https.
+  - The token is then stored in the container's gh config, where a login by hand would store it too.
+  - If it reports a missing scope, run `gh auth refresh -h github.com -s <scope>` on the host, then `gh-login` again.
+- A state repo with a `deployKey`: run `repos.mjs keys --role leader --team <team.json> --state-only --yes` on the host first, and pass `--key <deployKey>` to the clone.
+- `lock` exiting 3 stops here, as in step 2.
+- Then run step 5 inside with `H exec -- "…"`, then `H exec -- "node $KIT/scripts/verify.mjs A"` and `save`, then `H finish` after acceptance.
+
+### Start the leader
+
+The user runs 🖐:
+
+```
+docker exec -it <container> bash
+cd <workDir>
+team-claude
+```
+
+- On Windows this works straight from PowerShell with Docker Desktop, or from a WSL shell.
+- `team-claude` starts Claude Code with the channel. The session reads its manual and `session-state.md`.
+- Keep that terminal open. If the session is suspended by Ctrl+Z, type `fg` in the same terminal.
+- If the terminal was closed, the container keeps running. Start the leader again the same way: `docker exec`, then `team-claude`.
 
 ## Bring a worker in
 

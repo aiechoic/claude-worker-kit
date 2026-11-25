@@ -8,7 +8,8 @@
  * leader lock held here (leader); lark-cli profile matches and (unless --offline) reads the work chat;
  * channel config and App Secret file present (never read), allow list not empty, team-claude on PATH;
  * mcp.json written for this checkout and config; every secret in the team file present (path) or passing its check
- * command; and (unless --offline) one short `claude -p` call answers (not logged in / billing / rate limit shown).
+ * command; the repos in the "## Repositories" table cloned; every setup step with a check passing; the GitHub CLI's
+ * login and its scopes / admin rights (when a repo is cloned with it, or the team file sets gh); and (unless --offline) one short `claude -p` call answers (not logged in / billing / rate limit shown).
  * Exit 0 when everything passes, 1 otherwise.
  */
 import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync } from 'node:fs'
@@ -16,6 +17,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { launcherOnPath, pointsAt } from './lib/teamclaude.mjs'
+import { ghAdmin, ghBin, ghScopes, repoSlug } from './lib/gh.mjs'
+import { isLocalRepo, parseRepoTable } from './lib/repos.mjs'
 import { absPath, claudeProjectDir, git, isWin, spawnTool, parseArgs, roleFilePath, roleFromArgs, secretsOf, sessionStatePath, stateDir, thisHost } from './lib/team.mjs'
 
 const args = parseArgs(process.argv.slice(2))
@@ -122,6 +125,51 @@ for (const s of secretsOf(r)) {
   else if (s.check) check(`secret: ${s.name}`, () => {
     const x = spawnSync(s.check, { shell: true, encoding: 'utf8' })
     return x.status === 0 ? `\`${s.check}\` ok` : fail(`\`${s.check}\` failed; ${s.note ?? ''} (${s.by ?? 'user'})`)
+  })
+}
+
+// the repos of the "## Repositories" table (role file, or the manual without one)
+let table = []
+try {
+  const f = ROLE ?? MANUAL
+  table = existsSync(f) ? parseRepoTable(readFileSync(f, 'utf8')) : []
+} catch (e) { check('repos table', () => fail(e.message)) }
+if (table.length) check('repos cloned', () => {
+  const missing = table.filter(x => !existsSync(join(absPath(x.clone), '.git'))).map(x => x.clone)
+  return missing.length ? fail(`not cloned: ${missing.join(', ')} (repos.mjs clone --yes)`) : `${table.length} repo(s)`
+})
+
+// the project's own setup steps: each check passes (its output is not shown here)
+for (const [i, s] of [].concat(r.setup ?? []).entries()) {
+  if (!s?.check) continue
+  check(`setup ${i + 1}: ${s.name ?? s.run}`, () => {
+    const x = spawnSync(s.check, { shell: isWin ? true : '/bin/bash', cwd: absPath(s.cwd ?? '.', r.workDir), encoding: 'utf8' })
+    return x.status === 0 ? `\`${s.check}\` ok` : fail(`\`${s.check}\` failed: repos.mjs setup --yes`)
+  })
+}
+
+// the GitHub CLI's login, when this member clones over https with it or the team file names what it needs
+const httpsRepos = [...table, ...(r.stateRepo && !r.deployKey ? [{ repo: r.stateRepo }] : [])].filter(x => !x.key && !isLocalRepo(x.repo))
+if (httpsRepos.length || r.gh) {
+  check('GitHub login', () => {
+    const gh = ghBin()
+    if (!gh) return fail('gh is not installed (a docker member: install it in the image or as root, then host.mjs gh-login)')
+    const st = spawnTool(gh, ['auth', 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    if (st.status !== 0) return fail(`gh is not logged in: ${r.runtimeMode === 'docker' ? 'on the docker host run host.mjs gh-login' : 'the user types ! gh auth login'}`)
+    const sc = ghScopes(gh)
+    if (!sc.ok) return fail(`gh api user failed: ${sc.error}`)
+    const want = [].concat(r.gh?.scopes ?? ['repo'])
+    const implied = { 'read:org': ['write:org', 'admin:org'], 'read:public_key': ['write:public_key', 'admin:public_key'] }
+    const missing = sc.scopes === null ? [] : want.filter(w => !sc.scopes.includes(w) && !(implied[w] ?? []).some(x => sc.scopes.includes(x)))
+    const where = r.runtimeMode === 'docker' ? 'on the docker host, then host.mjs gh-login again' : 'in this session with !'
+    if (missing.length) return fail(`the gh login lacks the scope(s) ${missing.join(', ')}: run  gh auth refresh -h github.com -s ${missing.join(',')}  (${where})`)
+    const noAdmin = []
+    for (const repo of [].concat(r.gh?.admin ?? [])) {
+      const a = ghAdmin(gh, repoSlug(repo))
+      if (!a.ok || !a.admin) noAdmin.push(`${repoSlug(repo)}${a.ok ? '' : ` (${a.error})`}`)
+    }
+    if (noAdmin.length) return fail(`no admin rights on ${noAdmin.join(', ')} (adding deploy keys needs them): log gh in with an account that administers it, or have one grant it`)
+    return sc.scopes === null ? 'logged in (fine-grained token: scopes not listed)' : `scopes ${sc.scopes.join(', ')}`
   })
 }
 

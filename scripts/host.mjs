@@ -1,32 +1,38 @@
 #!/usr/bin/env node
 /**
- * Host side of a docker worker: rebuild it from a new image on fresh volumes, or roll back.
+ * Host side of a docker member (a worker, --n N; or the leader, --role leader): rebuild it from a new image on fresh
+ * volumes, or roll back. `M` below is `--n N` or `--role leader`.
  * Runs on the machine that has docker (Linux, or Windows with docker inside WSL: commands go through `wsl -e bash -lc`).
  * Prints the plan and changes nothing unless --yes.
  *
- *   node host.mjs status   --n N               containers, compose project, rebuild record, build directory, download speed (probe)
- *   node host.mjs rebuild  --n N [--yes] [--skip-build] [--project <compose project>] [--resume]
+ *   node host.mjs status   M               containers, compose project, rebuild record, build directory, download speed (probe)
+ *   node host.mjs rebuild  M [--yes] [--skip-build] [--project <compose project>] [--resume]
  *       1 tag the image the container runs <image>:pre-<stamp>   2 bring the build directory up to date, build the image
  *       3 stop the container, rename it <container>-old
  *       4 start a new one under a new compose project (⇒ new, empty volumes)   5 run the project's init hook inside it
  *       The record notes each step as it completes. A failure in step 1 or 2 leaves the container untouched: run
  *       rebuild again. A later failure keeps the record: rollback, or --resume to continue at the failed step.
- *   node host.mjs rollback --n N [--yes]
+ *   node host.mjs rollback M [--yes]
  *       remove the new container, rename <container>-old back and start it, put the old image tag back
- *   node host.mjs finish   --n N             after acceptance: delete the rebuild record file only (no container, volume or image is touched)
- *   node host.mjs up|down  --n N [--yes]     docker compose up -d / down (never -v) under the member's current compose project
- *   node host.mjs copy-kit --n N [--yes]    copy this kit into the container at /opt/worker-kit (for the inside steps)
- *   node host.mjs exec     --n N [--root] [--file <script>] [-- <command line>]
+ *   node host.mjs finish   M             after acceptance: delete the rebuild record file only (no container, volume or image is touched)
+ *   node host.mjs up|down  M [--yes]     docker compose up -d / down (never -v) under the member's current compose project
+ *   node host.mjs copy-kit M [--yes]    copy this kit into the container at /opt/worker-kit (for the inside steps)
+ *   node host.mjs exec     M [--root] [--file <script>] [-- <command line>]
  *       run a command line (or a script file) in the container with bash -l (runs without --yes). It goes in as a file
  *       (docker cp), so $, quotes and {} reach bash as written. --root runs it as the container's root.
- *   node host.mjs unseal   --n N --identity <master key file on this machine> [--force]
+ *   node host.mjs unseal   M --identity <master key file on this machine> [--force]
  *       the script reads the file and pipes it into secrets.mjs unseal in the container; then secrets.mjs status
+ *   node host.mjs gh-login M
+ *       log the container's gh in with this machine's gh login (the token goes in on stdin), and let git use it
+ *
+ * A container of a role with "lock": true (the leader) may be the live leader: rebuild, rollback and down refuse while
+ * it runs, unless --stop-running (only after the user confirmed that session is stopped).
  *
  * The build directory: runtime.docker.buildContext, or with runtime.docker.buildRepo ({ url, ref }) and no buildContext
  * ~/.claude-worker-kit/build/<repo name> on this machine. A missing one is cloned with the GitHub CLI's login; an
  * existing one is compared with the remote, and rebuild fast-forwards it when it is clean.
  *
- * Settings: roles.worker.runtime.docker (merged with members.<N>) in the team file.
+ * Settings: roles.<role>.runtime.docker (for a worker merged with members.<N>) in the team file.
  * The rebuild record lives at ~/.claude-worker-kit/<container>.json on this machine, the current compose project at
  * ~/.claude-worker-kit/<container>.project (a rebuild changes it: the old name mounts the old volumes); the build log at
  * ~/.claude-worker-kit/<container>-build.log on the docker host.
@@ -36,13 +42,16 @@ import { spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { dockerHost, q } from './lib/docker.mjs'
-import { ghToken, needGh, repoSlug } from './lib/gh.mjs'
+import { ghToken, httpsUrl, needGh, repoSlug, tokenGitArgs } from './lib/gh.mjs'
 import { absPath, die, info, isWin, needUser, ok, parseArgs, roleFromArgs, warn } from './lib/team.mjs'
 
 const args = parseArgs(process.argv.slice(2))
 const cmd = args._[0]
 const yes = !!args.yes
-const { r, teamFile } = roleFromArgs({ ...args, role: 'worker' })
+const { r, teamFile } = roleFromArgs({ ...args, role: args.role ?? 'worker' })
+const label = r.n ? `${r.role}-${r.n}` : r.role
+/** How this member is named on a host.mjs command line. */
+const M = r.n ? `--n ${r.n}` : `--role ${r.role}`
 const NATIVE_HINT = {
   status: 'there is no container to show; check the session in its work directory',
   rebuild: 'there is no container to rebuild; a native rebuild is a new work directory (references/worker-native.md)',
@@ -51,8 +60,9 @@ const NATIVE_HINT = {
   'copy-kit': 'there is no container to copy the kit into',
   exec: 'there is no container to run a command in; run it in the work directory',
   unseal: 'run secrets.mjs unseal --identity <file> in the work directory',
+  'gh-login': 'the session uses this machine\'s gh login as it is',
 }
-if (r.runtimeMode === 'native') die(`worker ${r.n} runs natively (runtime.mode = native${r.runtime?.mode ? '' : ', since the team file has no runtime.docker'}): ${NATIVE_HINT[cmd] ?? 'host.mjs only manages docker workers'}`)
+if (r.runtimeMode === 'native') die(`${label} runs natively (runtime.mode = native${r.runtime?.mode ? '' : ', since the team file has no runtime.docker'}): ${NATIVE_HINT[cmd] ?? 'host.mjs only manages docker members'}`)
 const H = dockerHost(r, { yes })
 const { d, C, useWsl, sh, look, exists, running, imageExists } = H
 const OLD = `${C}-old`
@@ -91,14 +101,11 @@ function writeProject(project) {
 }
 
 // ── build directory: clone or compare with the remote, with the GitHub CLI's login ──
-const CRED_HELPER = '!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'
-// a local path or file:// URL (tests, a mirror) is used as it is
-const httpsUrl = url => (/^(https?|file):\/\//.test(url) || url.startsWith('/') ? url : `https://github.com/${repoSlug(url)}.git`)
 
 /** git in the build directory's place, the token only in $GH_TOKEN (never an argument, a file or the output). */
 function buildGit(gitArgs, { capture = true, mutate = false } = {}) {
   const env = { GH_TOKEN: ghToken(), GIT_TERMINAL_PROMPT: '0' }
-  const a = ['-c', 'credential.helper=', '-c', `credential.helper=${CRED_HELPER}`, ...gitArgs]
+  const a = [...tokenGitArgs(), ...gitArgs]
   if (!BUILD.local) return sh(`git ${a.map(q).join(' ')}`, { capture, mutate, env })
   if (mutate && !yes) { console.log(`  [plan] git ${gitArgs.join(' ')}`); return { status: 0, stdout: '', stderr: '' } }
   if (!capture) console.log(`  $ git ${gitArgs.join(' ')}`)
@@ -177,7 +184,27 @@ const STEPS = [
 ]
 const TOUCHED = 2 // from step 3 on the old container may be stopped or renamed
 
-function readRecord() { return existsSync(RECORD) ? JSON.parse(readFileSync(RECORD, 'utf8')) : null }
+/** The record of this member; one written for another member under the same container name stops here. */
+function readRecord() {
+  if (!existsSync(RECORD)) return null
+  const rec = JSON.parse(readFileSync(RECORD, 'utf8'))
+  if (rec.member && rec.member !== label) die(`${RECORD} is the rebuild record of ${rec.member}, not ${label}: two members share the container name ${C} in the team file`)
+  return rec
+}
+
+/**
+ * A container of a lock-taking role (the leader) that is running may be the live leader: never stopped or removed by
+ * this script unless the user confirmed (--stop-running).
+ */
+function guardRunning(what) {
+  if (!r.lock || !exists(C) || !running(C) || args['stop-running']) return
+  if (!yes) { warn(`${C} is running and may be the live ${label}: with --yes ${what} stops unless --stop-running (after the user confirmed)`); return }
+  needUser([
+    `${C} is running, and it may be the live ${label}: ${what} would stop it. Nothing was changed.`,
+    `Only one ${label} may run: first stop the session in it (it runs state.mjs release), or the user confirms that`,
+    'container is not the live one. Then add --stop-running.',
+  ])
+}
 /** Steps a record says completed; a record without `done` comes from a kit that wrote it once, before step 2: progress unknown. */
 const doneOf = rec => (Number.isInteger(rec.done) ? rec.done : null)
 /** Nothing past the image build was reached: the container is untouched and a rebuild may simply start again. */
@@ -208,7 +235,7 @@ function preflight() {
   if (look('docker info >/dev/null 2>&1').status !== 0) die(`docker is not reachable${useWsl ? ' inside WSL' : ''}`)
   if (d.credDir) {
     const ls = look(`ls -1 ${q(d.credDir)} 2>/dev/null`)
-    if (ls.status !== 0) needUser([`The host credential directory ${d.credDir} is missing. Create it and put this worker's files there (names only are checked).`])
+    if (ls.status !== 0) needUser([`The host credential directory ${d.credDir} is missing. Create it and put this member's files there (names only are checked).`])
     info(`credential directory ${d.credDir}: ${ls.stdout.split('\n').filter(Boolean).join(', ') || '(empty)'} (names only)`)
   }
 }
@@ -233,14 +260,14 @@ function rebuild() {
   preflight()
   const resume = !!args.resume
   let rec = readRecord()
-  const again = `node host.mjs rebuild --n ${r.n} --team <team.json>`
+  const again = `node host.mjs rebuild ${M} --team <team.json>`
   if (rec && !rerunnable(rec)) {
     const n = doneOf(rec)
     if (n === null || n >= STEPS.length) die(`a rebuild of ${C} is already recorded (${RECORD}): finish or roll it back first`)
     if (!resume) {
       console.error([`❌ a rebuild of ${C} stopped after the old container was touched:`, ...describe(rec).map(l => `   ${l}`),
         '   Either go back to the old container:',
-        `     node host.mjs rollback --n ${r.n} --team <team.json> --yes`,
+        `     node host.mjs rollback ${M} --team <team.json> --yes`,
         `   or continue at step ${n + 1} once its cause is fixed:`,
         `     ${again} --resume --yes`].join('\n'))
       process.exit(1)
@@ -252,9 +279,10 @@ function rebuild() {
     if (rec && yes) dropOldTag(rec)
     const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '').replace('T', '-')
     const project = typeof args.project === 'string' ? args.project : `${d.composeProject}-${stamp.toLowerCase()}`
-    rec = { container: C, oldImage: null, project, oldContainer: null, at: new Date().toISOString(), stamp, done: 0, failed: null }
+    rec = { member: label, container: C, oldImage: null, project, oldContainer: null, at: new Date().toISOString(), stamp, done: 0, failed: null }
   }
   const first = doneOf(rec) + 1
+  if (first <= 3) guardRunning('the rebuild')
   console.log(`${yes ? (first > 1 ? 'Resuming' : 'Rebuilding') : 'Plan (add --yes to run)'}: ${C}, new compose project ${rec.project}${first > 1 ? `, from step ${first}` : ''}\n`)
   writeRecord(rec)
 
@@ -314,7 +342,7 @@ function rebuild() {
       }
       writeRecord(rec)
       console.error([`❌ step ${i} (${STEPS[i - 1]}) failed: ${e.message}`, `   The record ${RECORD} keeps the progress. Either go back to the old container:`,
-        `     node host.mjs rollback --n ${r.n} --team <team.json> --yes`,
+        `     node host.mjs rollback ${M} --team <team.json> --yes`,
         `   or continue at step ${i} once the cause is fixed:`,
         `     ${again} --resume --yes`].join('\n'))
       process.exit(1)
@@ -324,12 +352,12 @@ function rebuild() {
     writeRecord(rec)
   }
 
-  if (!yes) { console.log(`\nNothing changed. Rollback afterwards: node host.mjs rollback --n ${r.n} --team <team.json> --yes`); return }
-  ok(`${C} rebuilt (compose project ${rec.project}). Rollback: node host.mjs rollback --n ${r.n} --team <team.json> --yes`)
+  if (!yes) { console.log(`\nNothing changed. Rollback afterwards: node host.mjs rollback ${M} --team <team.json> --yes`); return }
+  ok(`${C} rebuilt (compose project ${rec.project}). Rollback: node host.mjs rollback ${M} --team <team.json> --yes`)
   info(`compose project ${rec.project} is noted in ${PROJECT_FILE}; host.mjs up / down use it (the old name mounts the old volumes)`)
   needUser([
     `Log in to Claude inside the new container: docker exec -it ${C} bash, then run claude, log in, exit.`,
-    'Then continue with the inside steps (references/worker-inside.md).',
+    `Then continue with the inside steps (references/${r.role === 'worker' ? 'worker-inside.md' : 'leader.md#leader-in-a-container'}).`,
   ])
 }
 
@@ -341,6 +369,7 @@ function rollback() {
     return
   }
   if (!rec && !exists(OLD)) die(`nothing to roll back: no record at ${RECORD} and no ${OLD}`)
+  if (exists(OLD)) guardRunning('the rollback')
   console.log(`${yes ? 'Rolling back' : 'Plan (add --yes to run)'}: ${C}\n`)
   if (exists(OLD)) {
     if (exists(C)) must(sh(`docker rm -f ${q(C)}`), 'docker rm')
@@ -370,6 +399,7 @@ function finish() {
 function upDown(which) {
   const { project, from } = currentProject()
   info(`compose project ${project} (from ${from})`)
+  if (which === 'down') guardRunning('down')
   must(sh(`${compose(project)} ${which === 'up' ? 'up -d' : 'down'}`), `docker compose ${which}`)
   if (yes) ok(which === 'up' ? `${C} is up (project ${project})` : `${C} is down (project ${project}); its volumes stay`)
 }
@@ -388,7 +418,7 @@ function execIn() {
   let text
   if (typeof args.file === 'string') text = readFileSync(absPath(args.file), 'utf8')
   else if (i >= 0) text = process.argv.slice(i + 1).join(' ')
-  else die('usage: host.mjs exec --n N [--root] [--file <script>] [-- <command line>]')
+  else die('usage: host.mjs exec M [--root] [--file <script>] [-- <command line>]')
   const res = H.runScript(text, { root: before.includes('--root') })
   process.exit(res.status)
 }
@@ -401,7 +431,7 @@ function unsealIn() {
   const team = typeof args['inner-team'] === 'string' ? args['inner-team'] : `${r.stateClone}/team.json`
   const kit = `${KIT_INSIDE}/scripts`
   if (look(`docker exec ${q(C)} test -f ${q(`${kit}/secrets.mjs`)}`).status !== 0) die(`the kit is not in ${C}: host.mjs copy-kit --yes first`)
-  const A = `--role worker --n ${q(r.n)} --team ${q(team)}`
+  const A = `--role ${q(r.role)}${r.n ? ` --n ${q(r.n)}` : ''} --team ${q(team)}`
   const key = readFileSync(file)
   let res
   try {
@@ -413,7 +443,20 @@ function unsealIn() {
   H.runScript(`node ${kit}/secrets.mjs status ${A}`)
 }
 
+/** The container's gh logged in with this machine's gh login: the token goes in on stdin, never on a command line. */
+function ghLogin() {
+  const gh = needGh('logging the container in to GitHub')
+  if (look(`docker exec ${q(C)} sh -c 'command -v gh' >/dev/null 2>&1`).status !== 0 && yes) die(`gh is not installed in ${C}: install it there (as root: apt-get install -y gh), then run gh-login again`)
+  if (!yes) { console.log(`  [plan] pass the gh login of this machine (${gh}) into ${C}: gh auth login --with-token (token on stdin), gh auth setup-git`); console.log('\nNothing changed. Add --yes.'); return }
+  const token = ghToken()
+  if (!token) die('this machine\'s gh gives no token (gh auth token failed)')
+  const res = H.runScript('gh auth login --hostname github.com --with-token && gh auth setup-git --hostname github.com && gh auth status --hostname github.com', { input: `${token}\n` })
+  if (res.status !== 0) die(`gh login in ${C} failed (exit ${res.status}). A missing scope is named above: on this machine run  gh auth refresh -s <scope>, then gh-login again`)
+  ok(`gh in ${C} is logged in with this machine's login; git there uses it for https`)
+}
+
 switch (cmd) {
+  case 'gh-login': ghLogin(); break
   case 'copy-kit': copyKit(); break
   case 'exec': execIn(); break
   case 'status': status(); break
@@ -424,6 +467,6 @@ switch (cmd) {
   case 'down': upDown('down'); break
   case 'unseal': unsealIn(); break
   default:
-    console.error('usage: host.mjs status|rebuild|rollback|finish|up|down|copy-kit|exec|unseal --n N [--team team.json] [--yes]')
+    console.error('usage: host.mjs status|rebuild|rollback|finish|up|down|copy-kit|exec|unseal|gh-login --n N|--role leader [--team team.json] [--yes]')
     process.exit(2)
 }

@@ -16,12 +16,12 @@ export function q(s) {
 }
 
 /**
- * The docker settings of a worker role and the helpers that run on its docker host.
+ * The docker settings of a docker member and the helpers that run on its docker host.
  * @param r the resolved role (runtimeMode docker)
  * @param opts { yes } without yes, mutating lines are only printed as the plan
  */
 export function dockerHost(r, { yes = false } = {}) {
-  const d = r.runtime?.docker || die('runtime.mode is docker but roles.worker.runtime.docker is missing in the team file')
+  const d = r.runtime?.docker || die(`runtime.mode is docker but roles.${r.role}.runtime.docker is missing in the team file`)
   for (const k of ['image', 'container', 'compose', 'composeProject']) if (!d[k]) die(`runtime.docker.${k} is missing`)
   const useWsl = d.wsl === true || (d.wsl !== false && isWin)
   const C = d.container

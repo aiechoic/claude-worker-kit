@@ -21,10 +21,10 @@ Everything project-specific comes from the project's **team file** (`team.json`,
 | --- | --- |
 | `state.mjs` | `clone` (before a team file exists), `restore`, `save` (seals changed credentials first), `lock` / `release` (leader), `status` |
 | `secrets.mjs` | `status` (names only), `seal`, `unseal --identity <file>` (the master key file the user names), `age` (is age installed), `keygen` (a new master key) |
-| `repos.mjs` | `keys` (makes deploy keys in the member and adds them to GitHub with the user's gh login), `clone` (ssh Host blocks and clones of the repos in `ROLE.md`), `list` |
+| `repos.mjs` | `keys` (makes deploy keys in the member and adds them to GitHub with the user's gh login), `clone` (ssh Host blocks and clones of the repos in `ROLE.md`; a row without a key over https with the gh login), `setup` (the team file's project steps, in order), `list` |
 | `channel.mjs` | `install` (channel repo + `team-claude`), `launcher` (only `team-claude`; stops if it points elsewhere, `--replace`), `place` (saved config → live, then the channel's `setup.mjs` writes `mcp.json`, then the App Secret file is checked), `capture` (portable fields → state repo), `allow`, `doctor`, `show` |
 | `lark.mjs` | `check`, `add` (secret piped from its file), `ping` (reads the work chat) |
-| `host.mjs` | docker host: `status` (also the build directory and download speed), `rebuild`, `rollback`, `finish` (deletes the record file only), `up` / `down`, `copy-kit`, `exec` (a command line or `--file`, copied in), `unseal --identity <file>` (plans only, unless `--yes`) |
+| `host.mjs` | docker host: `status` (also the build directory and download speed), `rebuild`, `rollback`, `finish` (deletes the record file only), `up` / `down`, `copy-kit`, `exec` (a command line or `--file`, copied in), `unseal --identity <file>`, `gh-login` (the container's gh logged in with the host's), for `--n N` or `--role leader` (plans only, unless `--yes`) |
 | `add-worker.mjs` | leader: allow a worker's bot, check its chat (and a deploy key, when the leader adds it) |
 | `verify.mjs` | acceptance checks for one member |
 
@@ -46,7 +46,7 @@ Every script takes `--role leader|worker`, `--n <N>` for workers, `--team <team.
 Ask the user (or read it from the request) three things:
 
 1. **Who**: the leader, or worker N.
-2. **Where**: a **docker** worker (Linux, or Windows with docker inside WSL), or a **native** session (Windows, no container). The leader runs natively, in a Linux shell or on Windows.
+2. **Where**: a **docker** member (Linux, or Windows with docker inside WSL), or a **native** session (Windows, no container). The leader runs natively or in a container too ([references/leader.md](references/leader.md#leader-in-a-container)).
 3. **What**:
 
 | case | when | go to |
@@ -65,7 +65,7 @@ Bring the leader up before its workers: the leader allows each worker's bot (`ad
 The team file is in the state repo, so you need the repo before you have the file:
 
 - **On a host with the user's GitHub access** (the docker host, or the leader's machine): clone the state repo with the user's own login: `gh repo clone <owner>/<repo>`. Without gh, install it yourself (`winget install --id GitHub.cli -e` / `apt-get install -y gh`); the user runs `! gh auth login`. The team file is in that clone.
-- **Inside a member** (container or native work directory): `repos.mjs keys --state-only --yes` from the machine with gh makes the deploy key in the member and adds it to the state repo, then `state.mjs clone --repo <url> --to <stateClone> --key <deployKey>`.
+- **Inside a member** (container or native work directory): `repos.mjs keys --state-only --yes` from the machine with gh makes the deploy key in the member and adds it to the state repo, then `state.mjs clone --repo <url> --to <stateClone> --key <deployKey>`. Without a `deployKey` the clone goes over https with the gh login (in a container: `host.mjs gh-login` first).
 - **No state repo at all**: see [references/new.md](references/new.md).
 
 ## Finish

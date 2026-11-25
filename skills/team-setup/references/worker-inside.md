@@ -29,6 +29,8 @@ node "$KIT/scripts/repos.mjs" keys A --yes      # on the host: keys in the conta
 H exec -- "node $KIT/scripts/repos.mjs clone A --yes"   # inside: ssh Host blocks, clones
 ```
 
+Then the team file's `setup` steps, if it has any: `node "$KIT/scripts/repos.mjs" setup A --yes` (on the host; they run in the container) ([team-file.md](team-file.md#setup-steps)).
+
 ## 3. Feishu
 
 In this order:

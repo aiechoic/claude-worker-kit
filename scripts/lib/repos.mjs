@@ -20,8 +20,8 @@ const cell = c => c.trim().replace(/^`(.*)`$/, '$1').trim()
 const splitRow = line => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell)
 
 /**
- * The table under `## Repositories` in a ROLE.md. Returns [] when there is no such section.
- * Throws on a table without the columns repo, clone and key, or a row missing one of them.
+ * The table under `## Repositories` in a ROLE.md (or a manual). Returns [] when there is no such section.
+ * Throws on a table without the columns repo, clone and key, or a row missing repo or clone.
  */
 export function parseRepoTable(markdown) {
   const lines = String(markdown).split(/\r?\n/)
@@ -40,11 +40,12 @@ export function parseRepoTable(markdown) {
     const cells = splitRow(lines[i])
     if (cells.every(c => /^:?-+:?$/.test(c))) continue
     const row = Object.fromEntries(head.map((h, k) => [h, cells[k] ?? '']))
-    for (const c of ['repo', 'clone', 'key']) if (!row[c]) throw new Error(`ROLE.md "## ${HEADING}": row "${lines[i].trim()}" has no ${c}`)
+    for (const c of ['repo', 'clone']) if (!row[c]) throw new Error(`ROLE.md "## ${HEADING}": row "${lines[i].trim()}" has no ${c}`)
     const access = (row.access || 'write').toLowerCase()
     if (!['read', 'write'].includes(access)) throw new Error(`ROLE.md "## ${HEADING}": access must be read or write, not "${row.access}"`)
     if (row.host && !/^[\w.-]+$/.test(row.host)) throw new Error(`ROLE.md "## ${HEADING}": host "${row.host}" is not an ssh Host name`)
-    out.push({ repo: row.repo, clone: row.clone, key: row.key, host: row.host || null, access })
+    if (row.host && !row.key) throw new Error(`ROLE.md "## ${HEADING}": row "${lines[i].trim()}" has a host but no key (the ssh Host needs the key)`)
+    out.push({ repo: row.repo, clone: row.clone, key: row.key || null, host: row.host || null, access })
   }
   return out
 }
@@ -52,9 +53,11 @@ export function parseRepoTable(markdown) {
 /** A local path or file:// URL (tests, mirrors): cloned without ssh. */
 export const isLocalRepo = url => /^file:\/\//.test(url) || /^[A-Za-z]:[\\/]/.test(url) || url.startsWith('/')
 
-/** The URL a row is cloned from: through its ssh Host alias when it has one. */
+/** The URL a row is cloned from: through its ssh Host alias when it has one; https for a row without a key. */
 export function cloneUrl(row, slug) {
-  if (isLocalRepo(row.repo) || !row.host) return row.repo
+  if (isLocalRepo(row.repo)) return row.repo
+  if (!row.key) return /^https?:\/\//.test(row.repo) ? row.repo : `https://github.com/${slug}.git`
+  if (!row.host) return row.repo
   return `git@${row.host}:${slug}.git`
 }
 

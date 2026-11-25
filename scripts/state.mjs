@@ -15,7 +15,8 @@
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { userInfo } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { parseRepoTable } from './lib/repos.mjs'
+import { cloneToken, httpsUrl, tokenGitArgs } from './lib/gh.mjs'
+import { isLocalRepo, parseRepoTable } from './lib/repos.mjs'
 import { applySave, listFiles, MARK, mirrorDir, readMarker, savePlan, unsavedLocal, writeMarker } from './lib/memsync.mjs'
 import { ageVersion, recipientOf, seal, sealedEntries, sealPlace } from './lib/secrets.mjs'
 import { absPath, claudeProjectDir, commitMessage, die, git, info, isWin, needUser, ok, parseArgs, roleFilePath, roleFromArgs, secretsOf, sessionStatePath, thisHost, warn } from './lib/team.mjs'
@@ -26,6 +27,16 @@ const dry = !!args['dry-run']
 
 // `clone` comes before the team file exists (the team file lives in the state repo):
 //   node state.mjs clone --repo <git url> --to <dir> [--key <deploy key>]
+// Without a key a GitHub repo is cloned over https with the GitHub CLI's login (the token only in $GH_TOKEN).
+/** git clone of the state repo: with the deploy key, or over https with the gh login; core.autocrlf=input keeps memory files LF. */
+function cloneState(repo, to, key) {
+  const https = !key && !isLocalRepo(repo)
+  if (!https) return { ...git(null, ['clone', '-q', '-c', 'core.autocrlf=input', repo, to], { key }), url: repo }
+  const url = httpsUrl(repo)
+  const token = cloneToken(repo)
+  const res = git(null, [...tokenGitArgs(), 'clone', '-q', '-c', 'core.autocrlf=input', url, to], { env: { GH_TOKEN: token, GIT_TERMINAL_PROMPT: '0' } })
+  return { ...res, stderr: (res.stderr ?? '').replaceAll(token, '***'), url }
+}
 if (cmd === 'clone') {
   const to = typeof args.to === 'string' ? absPath(args.to) : die('pass --to <directory>')
   if (typeof args.repo !== 'string') die('pass --repo <git url of the state repo>')
@@ -34,10 +45,9 @@ if (cmd === 'clone') {
   if (key && !existsSync(key)) {
     die(`no deploy key at ${key}: run repos.mjs keys --state-only --yes first (it makes the key and adds it to the repo with the user's gh login)`)
   }
-  // core.autocrlf=input: memory files stay LF in the working tree whatever the global setting (Claude Code writes LF)
-  const res = git(null, ['clone', '-q', '-c', 'core.autocrlf=input', args.repo, to], { key })
+  const res = cloneState(args.repo, to, key)
   if (res.status !== 0) die(`clone failed: ${res.stderr.trim()}${key ? ' (deploy key added and writable?)' : ''}`)
-  ok(`cloned ${args.repo} → ${to}; the team file is ${join(to, 'team.json')}${existsSync(join(to, 'team.json')) ? '' : ' (missing: write one from examples/team.json)'}`)
+  ok(`cloned ${res.url} → ${to}${res.url !== args.repo ? ' (https, with the gh login)' : ''}; the team file is ${join(to, 'team.json')}${existsSync(join(to, 'team.json')) ? '' : ' (missing: write one from examples/team.json)'}`)
   process.exit(0)
 }
 
@@ -256,7 +266,7 @@ function restore() {
       die(`no deploy key at ${KEY}: run repos.mjs keys --state-only --yes first (on the machine with the user's gh login; it makes the key here and adds it to the state repo)`)
     }
     info(`cloning ${r.stateRepo} → ${CLONE}`)
-    if (!dry) must(git(null, ['clone', '-q', '-c', 'core.autocrlf=input', r.stateRepo, CLONE], { key: KEY }), 'git clone')
+    if (!dry) must(cloneState(r.stateRepo, CLONE, KEY || null), 'git clone')
   } else pull()
   if (!dry) for (const d of ['memory', 'tools', 'data']) mkdirSync(join(ME, d), { recursive: true })
   restoreMemory()
@@ -265,9 +275,10 @@ function restore() {
   if (r.bot?.profile) manual.push(`lark-cli profile ${r.bot.profile} (check: node scripts/lark.mjs check …)`)
   if (r.channel) manual.push('Feishu channel: node scripts/channel.mjs install, then place (it checks the App Secret file) …')
   try {
-    const rf = roleFilePath(r)
-    const extra = rf && existsSync(rf) ? parseRepoTable(readFileSync(rf, 'utf8')) : []
-    if (extra.length) manual.push(`repos in ROLE.md (${extra.map(x => x.clone).join(', ')}): node scripts/repos.mjs keys --yes, then repos.mjs clone --yes`)
+    const rf = roleFilePath(r) ?? MANUAL
+    const extra = existsSync(rf) ? parseRepoTable(readFileSync(rf, 'utf8')) : []
+    if (extra.length) manual.push(`repos in ${rf} (${extra.map(x => x.clone).join(', ')}): node scripts/repos.mjs keys --yes, then repos.mjs clone --yes`)
+    if ([].concat(r.setup ?? []).length) manual.push(`setup steps of the team file (${[].concat(r.setup).map(x => x?.name).join(', ')}): node scripts/repos.mjs setup --yes, after the clones`)
   } catch (e) { warn(e.message) }
   // credentials sealed in the repo come back in one step with the master key; the rest are filled one by one
   let sealed = []

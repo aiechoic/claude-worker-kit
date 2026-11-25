@@ -68,6 +68,45 @@ export function ghToken() {
   return t.status === 0 ? t.stdout.trim() : ''
 }
 
+/**
+ * git over https with a GitHub token: the token only in $GH_TOKEN, read by this credential helper (never an argument,
+ * a file, a remote URL or the output). Put these arguments before the git subcommand; they do not persist.
+ */
+export const CRED_HELPER = '!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'
+export const tokenGitArgs = () => ['-c', 'credential.helper=', '-c', `credential.helper=${CRED_HELPER}`]
+
+/** The https URL of a GitHub repo; a local path or file:// / https URL (tests, a mirror) as it is. */
+export const httpsUrl = url => (/^(https?|file):\/\//.test(url) || url.startsWith('/') || /^[A-Za-z]:[\\/]/.test(url) ? url : `https://github.com/${repoSlug(url)}.git`)
+
+/**
+ * A GitHub token for an https clone here: $GH_TOKEN, else this machine's gh login. Exits 10 without one, saying how
+ * to log in (in a container: host.mjs gh-login from the docker host).
+ */
+export function cloneToken(what) {
+  const t = process.env.GH_TOKEN || ghToken()
+  if (t) return t
+  needUser([
+    `No GitHub login here for the https clone of ${what} (no deploy key is set for it).`,
+    'In a docker member: on the docker host run  node host.mjs gh-login …  (it passes the host\'s gh login in).',
+    'Natively: in this session type  ! gh auth login',
+  ])
+}
+
+/** The scopes of the gh login (from the X-OAuth-Scopes header); null when gh does not say (a fine-grained token). */
+export function ghScopes(gh) {
+  const res = run(gh, ['api', '-i', 'user'], { capture: true, quiet: true })
+  if (res.status !== 0) return { ok: false, error: (res.stderr || res.stdout).trim().split('\n')[0] }
+  const m = /^x-oauth-scopes:[ \t]*(.*)$/im.exec(res.stdout)
+  return { ok: true, scopes: m ? m[1].split(',').map(x => x.trim()).filter(Boolean) : null }
+}
+
+/** Whether the gh login has admin rights on owner/repo (deploy keys need them). */
+export function ghAdmin(gh, slug) {
+  const res = ghApi(gh, `repos/${slug}`)
+  if (!res.ok) return { ok: false, error: res.error }
+  return { ok: true, admin: !!res.data?.permissions?.admin }
+}
+
 /** gh api, JSON back. */
 export function ghApi(gh, path, fields = [], { method } = {}) {
   const a = ['api', path, ...(method ? ['-X', method] : []), ...fields]
@@ -83,11 +122,11 @@ export function ghApi(gh, path, fields = [], { method } = {}) {
 export function addDeployKey(gh, slug, pubLine, { title, readOnly = false, dry = false } = {}) {
   const body = pubLine.trim().split(/\s+/).slice(0, 2).join(' ')
   const list = ghApi(gh, `repos/${slug}/keys?per_page=100`)
-  if (!list.ok) return { added: false, error: `cannot list the deploy keys of ${slug} (admin rights on it?): ${list.error}` }
+  if (!list.ok) return { added: false, error: `cannot list the deploy keys of ${slug}: ${list.error} (the gh login needs the "repo" scope and admin rights on ${slug}: gh auth refresh -s repo)` }
   const have = (list.data ?? []).find(k => String(k.key).trim().split(/\s+/).slice(0, 2).join(' ') === body)
   if (have) return { added: false, title: have.title, readOnly: have.read_only }
   if (dry) return { added: true, title }
   const res = ghApi(gh, `repos/${slug}/keys`, ['-f', `title=${title}`, '-f', `key=${body}`, '-F', `read_only=${readOnly}`], { method: 'POST' })
-  if (!res.ok) return { added: false, error: `adding the deploy key to ${slug} failed: ${res.error}` }
+  if (!res.ok) return { added: false, error: `adding the deploy key to ${slug} failed: ${res.error} (the gh login needs the "repo" scope and admin rights on ${slug}: gh auth refresh -s repo)` }
   return { added: true, title }
 }

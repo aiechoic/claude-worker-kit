@@ -31,7 +31,7 @@ git clone https://github.com/aiechoic/claude-worker-kit "$env:USERPROFILE\.claud
 
 Then ask, for example, "restore worker 3 from its state repo" or "rebuild worker 3 on a new image". The `team-setup` skill picks the case and runs the scripts step by step. When a step needs you, it stops and tells you what to do. For a restore or a rebuild that is three things: say where the master key file is (best in the first request), `! gh auth login`, and log in to Claude inside a new container. Installing tools (age, gh), deploy keys, unsealing and clones are the session's work.
 
-Requirements: Node 20+, git, OpenSSH, and the official [age](https://github.com/FiloSottile/age) tool (1.1 or later) for sealed credentials; the session installs it when it is missing (`apt-get`, `docker exec -u root`, or `winget`). The scripts have no npm dependencies. You also need lark-cli (`npm install -g @larksuite/cli`), the GitHub CLI `gh` on the leader's machine, and docker on the host for docker workers.
+Requirements: Node 20+, git, OpenSSH, and the official [age](https://github.com/FiloSottile/age) tool (1.1 or later) for sealed credentials; the session installs it when it is missing (`apt-get`, `docker exec -u root`, or `winget`). The scripts have no npm dependencies. You also need lark-cli (`npm install -g @larksuite/cli`), the GitHub CLI `gh` on the leader's machine, and docker on the host for docker members.
 
 ## How it fits together
 
@@ -47,7 +47,7 @@ state repo (private)                     this kit (public)
 │   └── data/            small data files
 ```
 
-- **The team file** (`team.json`, in the project's private state repo) holds everything project-specific. That covers each role's state repo and directory, work directory, bot app id and lark-cli profile, chats, channel paths, the credentials it needs (paths and who fills them, never values) and, for docker workers, the image, compose file, credential directory and init hook. The format is in [skills/team-setup/references/team-file.md](skills/team-setup/references/team-file.md), with an example in [examples/team.json](examples/team.json).
+- **The team file** (`team.json`, in the project's private state repo) holds everything project-specific. That covers each role's state repo and directory, work directory, bot app id and lark-cli profile, chats, channel paths, the credentials it needs (paths and who fills them, never values) the project's own setup steps and, for docker members, the image, compose file, credential directory and init hook. The format is in [skills/team-setup/references/team-file.md](skills/team-setup/references/team-file.md), with an example in [examples/team.json](examples/team.json).
 - **Only one leader.** The leader takes a lock in its state repo at start (host, session, time), refreshes it on `save`, and releases it at handover. A lock held elsewhere stops the start. Taking it over needs the user's confirmation and `--force`.
 - **Credentials** never go through the conversation, and never into any repo in the clear. Scripts check that a credential file exists. Secrets are piped from their files straight into the program that needs them (for example `lark-cli profile add --app-secret-stdin`).
 - **Sealed credentials.** A `secrets` entry marked `"sealed": true` is kept in the member's directory as `secrets/<id>.age`, encrypted with age to the team's public key (`secretsRecipient`). `state.mjs save` seals the ones that changed; sealing needs only the public key. On a new machine the user names the **master key** file (the matching age identity, kept by the user, never in a repo or the session) and the script reads it once (`host.mjs unseal` / `secrets.mjs unseal --identity <file>`), and every sealed credential is back at its path. Entries that are not sealed are filled one by one as before. Deploy keys are never sealed: a lost one is replaced by a new one.
@@ -62,8 +62,8 @@ Run them with `node scripts/<name>.mjs <command> --role leader|worker [--n N] --
 | `secrets.mjs` | `status`, `seal`, `unseal` (master key on stdin or from a file), `keygen` |
 | `channel.mjs` | `install`, `launcher`, `place`, `capture`, `allow`, `doctor`, `show`, `check-secret` |
 | `lark.mjs` | `check`, `add`, `ping` |
-| `host.mjs` | `status`, `rebuild`, `rollback`, `finish` (deletes the record file only), `up` / `down`, `copy-kit`, `exec`, `unseal`. Without `--yes` the changing ones only print the plan. |
-| `repos.mjs` | `keys` (deploy keys made in the member and added with the user's gh login), `clone` (ssh Host blocks and clones of the repos in `ROLE.md`), `list` |
+| `host.mjs` | `status`, `rebuild`, `rollback`, `finish` (deletes the record file only), `up` / `down`, `copy-kit`, `exec`, `unseal`, `gh-login`, for a docker worker (`--n N`) or a leader in a container (`--role leader`). Without `--yes` the changing ones only print the plan; a running leader container is never stopped without `--stop-running`. |
+| `repos.mjs` | `keys` (deploy keys made in the member and added with the user's gh login), `clone` (ssh Host blocks and clones of the repos in `ROLE.md`; rows without a key over https with the gh login), `setup` (the project's own steps from the team file), `list` |
 | `add-worker.mjs` | leader side: the worker's bot in the leader's allow list, the work chat (and a deploy key, with `--pubkey`) |
 | `verify.mjs` | acceptance checks for one member |
 | `check-public.mjs` | publishing guard: fails on ids, keys, secrets, non-example hostnames, and words from a local denylist |
@@ -73,7 +73,7 @@ More roles (for example ops or report) are added as `roles.<name>` in the team f
 ## Development
 
 ```bash
-node --test test/*.test.mjs     # state round trip, leader lock, copy mode, channel config, host rebuild/resume/rollback (fake docker), sealed credentials (real age; skipped without it)
+node --test test/*.test.mjs     # state round trip, leader lock, copy mode, channel config, host rebuild/resume/rollback (fake docker), the leader flow in a container, sealed credentials (real age; skipped without it)
 node scripts/check-public.mjs   # with your project's words in an untracked .public-denylist
 ```
 
