@@ -7,14 +7,16 @@
  * Checks: state repo cloned, clean and pushed; memory linked (or copied); manual imports the role file (roleFile); the session-state file (sessionState) is there;
  * leader lock held here (leader); lark-cli profile matches and (unless --offline) reads the work chat;
  * channel config and App Secret file present (never read), allow list not empty, team-claude on PATH;
- * every secret in the team file present (path) or passing its check command.
+ * mcp.json written for this checkout and config; every secret in the team file present (path) or passing its check
+ * command; and (unless --offline) one short `claude -p` call answers (not logged in / billing / rate limit shown).
  * Exit 0 when everything passes, 1 otherwise.
  */
-import { existsSync, lstatSync, readFileSync, readlinkSync, statSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { launcherOnPath, pointsAt } from './lib/teamclaude.mjs'
-import { absPath, claudeProjectDir, git, isWin, parseArgs, roleFilePath, roleFromArgs, secretsOf, sessionStatePath, stateDir, thisHost } from './lib/team.mjs'
+import { absPath, claudeProjectDir, git, isWin, spawnTool, parseArgs, roleFilePath, roleFromArgs, secretsOf, sessionStatePath, stateDir, thisHost } from './lib/team.mjs'
 
 const args = parseArgs(process.argv.slice(2))
 const { r, teamFile } = roleFromArgs(args)
@@ -93,6 +95,16 @@ if (r.channel) {
     if (!sf || !existsSync(sf) || statSync(sf).size === 0) return fail(`App Secret file ${sf ?? '(unset)'} missing or empty`)
     return `${c.allow.length} allowed sender(s), secret file present (not read)`
   })
+  check('channel mcp.json', () => {
+    const f = join(dirname(cfgPath), 'mcp.json')
+    if (!existsSync(f)) return fail(`${f} missing: channel.mjs place (runs the channel's setup.mjs)`)
+    let srv
+    try { srv = JSON.parse(readFileSync(f, 'utf8')).mcpServers?.feishu } catch (e) { return fail(`${f}: ${e.message}`) }
+    const bridge = join(absPath(r.channel.checkout), 'src', 'bridge.mjs')
+    if (!srv) return fail(`${f} has no "feishu" server: channel.mjs place`)
+    if (resolve(srv.args?.[0] ?? '') !== resolve(bridge) || resolve(srv.env?.FEISHU_CHANNEL_CONFIG ?? '') !== resolve(cfgPath)) return fail(`${f} points at ${srv.args?.[0]} with ${srv.env?.FEISHU_CHANNEL_CONFIG}, not this checkout and config: channel.mjs place`)
+    return true
+  })
   check('channel checkout', () => existsSync(join(absPath(r.channel.checkout), 'node_modules')) ? true : fail('not installed: channel.mjs install'))
   check('team-claude points here', () => {
     const l = launcherOnPath()
@@ -110,6 +122,25 @@ for (const s of secretsOf(r)) {
   else if (s.check) check(`secret: ${s.name}`, () => {
     const x = spawnSync(s.check, { shell: true, encoding: 'utf8' })
     return x.status === 0 ? `\`${s.check}\` ok` : fail(`\`${s.check}\` failed; ${s.note ?? ''} (${s.by ?? 'user'})`)
+  })
+}
+
+// one short call, so an account that is not logged in, out of credit or rate limited shows here, not at the first task;
+// from an empty directory, so the call is not a session of this member's work directory (team-claude would continue it)
+if (!args.offline) {
+  check('Claude API', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'cwk-verify-'))
+    try {
+      const bin = process.env.WORKER_KIT_CLAUDE || (isWin ? 'claude.cmd' : 'claude')
+      const x = spawnTool(bin, ['-p', 'Reply with the single word: ok', '--max-turns', '1'], { cwd, encoding: 'utf8', timeout: 90_000, stdio: ['ignore', 'pipe', 'pipe'] })
+      if (x.error?.code === 'ENOENT') return fail('claude is not on PATH')
+      if (x.error?.code === 'ETIMEDOUT' || x.signal) return fail('no answer in 90 s (network or proxy?)')
+      const out = `${x.stdout ?? ''}\n${x.stderr ?? ''}`.trim()
+      if (x.status === 0 && /\bok\b/i.test(x.stdout ?? '')) return 'answered'
+      const first = out.split('\n').find(l => l.trim()) ?? `exit ${x.status}`
+      const why = /log ?in|\/login|not logged|authenticat|api key/i.test(out) ? 'not logged in' : /credit|billing|balance|payment|quota|subscription/i.test(out) ? 'billing' : /rate limit|overloaded|429|529/i.test(out) ? 'rate limited' : 'error'
+      return fail(`${why}: ${first.trim().slice(0, 200)}`)
+    } finally { rmSync(cwd, { recursive: true, force: true }) }
   })
 }
 

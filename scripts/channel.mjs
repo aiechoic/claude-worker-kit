@@ -14,8 +14,9 @@
  *
  * The team file gives roles.<role>.channel: { repo, checkout, config, saved, appSecretFile, stateDir? }.
  * The App Secret is never read or printed: only appSecretFile (a path) goes into the config.
- * `team-claude` regenerates mcp.json / settings.json next to the config when they are missing or stale,
- * so only config.json (and an expected-scopes file, if any) is kept in the state repo.
+ * mcp.json / settings.json next to the config are written only by the channel's own code: place runs the channel's
+ * bin/setup.mjs, and `team-claude` rewrites them by the same rule when they are missing or stale. So only config.json
+ * (and an expected-scopes file, if any) is kept in the state repo. Order: install, then place.
  */
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -114,7 +115,18 @@ function place() {
   if (ch.stateDir) live.stateDir = absPath(ch.stateDir) // else keep the saved one (same paths on a rebuilt volume)
   writeJson(CONFIG, live)
   ok(`channel config placed: ${CONFIG}`)
+  claudeFiles()
   checkSecret()
+}
+
+/** mcp.json and settings.json, written by the channel's own setup.mjs (the rule team-claude checks them by). */
+function claudeFiles() {
+  const setup = join(CHECKOUT, 'bin', 'setup.mjs')
+  if (!existsSync(setup)) { warn(`the channel is not installed at ${CHECKOUT}: channel.mjs install, then place again (its setup.mjs writes mcp.json)`); return }
+  if (dry) { info(`[dry-run] node ${setup} ${CONFIG}`); return }
+  const res = run(process.execPath, [setup, CONFIG], { cwd: CHECKOUT, capture: true, quiet: true, env: { FEISHU_CHANNEL_CONFIG: CONFIG } })
+  if (res.status !== 0) die(`the channel's setup.mjs failed: ${(res.stderr || res.stdout).trim().split('\n')[0]}`)
+  ok(`mcp.json and settings.json written next to the config by the channel's setup.mjs`)
 }
 
 function checkSecret() {
