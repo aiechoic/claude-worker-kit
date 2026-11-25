@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { resolveRole, secretsOf } from '../scripts/lib/team.mjs'
+import { commitMessage, resolveRole, secretsOf } from '../scripts/lib/team.mjs'
 
 const LIB = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'lib', 'team.mjs')
 const base = () => ({
@@ -56,4 +56,12 @@ test('contentHash: CRLF = LF for text, binary untouched', async () => {
   assert.notEqual(contentHash(Buffer.from('a\nb\n')), contentHash(Buffer.from('a\nc\n')))
   assert.notEqual(contentHash(Buffer.from([0, 13, 10])), contentHash(Buffer.from([0, 10])))
   assert.equal(contentHash(Buffer.from('中文\r\n')), contentHash(Buffer.from('中文\n')), 'UTF-8 text too')
+})
+
+test('commitMessage adds the label once', () => {
+  assert.equal(commitMessage('worker-3', 'restored'), 'worker-3: restored')
+  assert.equal(commitMessage('worker-3', 'worker-3: restored'), 'worker-3: restored')
+  assert.equal(commitMessage('worker-3', 'Worker-3 : restored'), 'Worker-3 : restored')
+  assert.equal(commitMessage('worker-3', 'worker-30: x'), 'worker-3: worker-30: x')
+  assert.equal(commitMessage('leader', 'leader lock: host'), 'leader: leader lock: host')
 })

@@ -246,6 +246,12 @@ export function selfStep(title, lines) {
   process.exit(11)
 }
 
+/** `<label>: <message>`, unless the message already starts with the label (a caller that adds it itself). */
+export function commitMessage(label, message) {
+  const m = String(message).trim()
+  return new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*:`, 'i').test(m) ? m : `${label}: ${m}`
+}
+
 /** Where this session's directory in the state repo lives. */
 export function stateDir(r) {
   if (!r.stateClone) die(`roles.${r.role}.stateClone is missing`)

@@ -17,7 +17,7 @@ import { userInfo } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { applySave, listFiles, MARK, mirrorDir, readMarker, savePlan, unsavedLocal, writeMarker } from './lib/memsync.mjs'
 import { ageVersion, recipientOf, seal, sealedEntries, sealPlace } from './lib/secrets.mjs'
-import { absPath, claudeProjectDir, die, git, info, isWin, needUser, ok, parseArgs, roleFilePath, roleFromArgs, secretsOf, sessionStatePath, thisHost, warn } from './lib/team.mjs'
+import { absPath, claudeProjectDir, commitMessage, die, git, info, isWin, needUser, ok, parseArgs, roleFilePath, roleFromArgs, secretsOf, sessionStatePath, thisHost, warn } from './lib/team.mjs'
 
 const args = parseArgs(process.argv.slice(2))
 const cmd = args._[0]
@@ -86,10 +86,11 @@ function pull() {
 }
 
 function commitAndPush(paths, message) {
-  if (dry) { info(`[dry-run] git add ${paths.join(' ')} && git commit -m "${label}: ${message}" && git push`); return true }
+  message = commitMessage(label, message)
+  if (dry) { info(`[dry-run] git add ${paths.join(' ')} && git commit -m "${message}" && git push`); return true }
   must(g(['add', '-A', '--', ...paths]), 'git add')
   if (g(['diff', '--cached', '--quiet']).status === 0) info('nothing to commit')
-  else must(g([...identityArgs(), 'commit', '-q', '-m', `${label}: ${message}`]), 'git commit')
+  else must(g([...identityArgs(), 'commit', '-q', '-m', message]), 'git commit')
   for (let i = 0; i < 5; i++) {
     const p = g(['push', '-q'])
     if (p.status === 0) { ok('pushed'); return true }
