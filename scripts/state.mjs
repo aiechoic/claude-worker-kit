@@ -15,6 +15,7 @@
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { userInfo } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { parseRepoTable } from './lib/repos.mjs'
 import { applySave, listFiles, MARK, mirrorDir, readMarker, savePlan, unsavedLocal, writeMarker } from './lib/memsync.mjs'
 import { ageVersion, recipientOf, seal, sealedEntries, sealPlace } from './lib/secrets.mjs'
 import { absPath, claudeProjectDir, commitMessage, die, git, info, isWin, needUser, ok, parseArgs, roleFilePath, roleFromArgs, secretsOf, sessionStatePath, thisHost, warn } from './lib/team.mjs'
@@ -31,7 +32,7 @@ if (cmd === 'clone') {
   const key = typeof args.key === 'string' ? absPath(args.key) : null
   if (existsSync(join(to, '.git'))) { ok(`${to} already cloned`); process.exit(0) }
   if (key && !existsSync(key)) {
-    needUser([`No deploy key at ${key}. Generate one:`, `  ssh-keygen -t ed25519 -N "" -C <role>-state -f "${key}"`, 'send the .pub line to the leader, wait for "added", then run clone again.'])
+    die(`no deploy key at ${key}: run repos.mjs keys --state-only --yes first (it makes the key and adds it to the repo with the user's gh login)`)
   }
   // core.autocrlf=input: memory files stay LF in the working tree whatever the global setting (Claude Code writes LF)
   const res = git(null, ['clone', '-q', '-c', 'core.autocrlf=input', args.repo, to], { key })
@@ -252,11 +253,7 @@ function refreshLock() {
 function restore() {
   if (!existsSync(join(CLONE, '.git'))) {
     if (KEY && !existsSync(KEY)) {
-      needUser([
-        `No deploy key at ${KEY}. Generate one:`,
-        `  ssh-keygen -t ed25519 -N "" -C ${label}-state -f "${KEY}"`,
-        `then send the .pub line to the leader to add as a writable deploy key on the state repo, and wait for "added".`,
-      ])
+      die(`no deploy key at ${KEY}: run repos.mjs keys --state-only --yes first (on the machine with the user's gh login; it makes the key here and adds it to the state repo)`)
     }
     info(`cloning ${r.stateRepo} → ${CLONE}`)
     if (!dry) must(git(null, ['clone', '-q', '-c', 'core.autocrlf=input', r.stateRepo, CLONE], { key: KEY }), 'git clone')
@@ -266,11 +263,16 @@ function restore() {
   importRole()
   const manual = []
   if (r.bot?.profile) manual.push(`lark-cli profile ${r.bot.profile} (check: node scripts/lark.mjs check …)`)
-  if (r.channel) manual.push('Feishu channel: node scripts/channel.mjs install / place …')
+  if (r.channel) manual.push('Feishu channel: node scripts/channel.mjs install, then place (it checks the App Secret file) …')
+  try {
+    const rf = roleFilePath(r)
+    const extra = rf && existsSync(rf) ? parseRepoTable(readFileSync(rf, 'utf8')) : []
+    if (extra.length) manual.push(`repos in ROLE.md (${extra.map(x => x.clone).join(', ')}): node scripts/repos.mjs keys --yes, then repos.mjs clone --yes`)
+  } catch (e) { warn(e.message) }
   // credentials sealed in the repo come back in one step with the master key; the rest are filled one by one
   let sealed = []
   try { sealed = sealedEntries(r).filter(e => existsSync(e.file)) } catch (e) { warn(e.message) }
-  if (sealed.length) manual.push(`sealed credentials (${sealed.map(e => e.id).join(', ')}): the user pipes the master key into node scripts/secrets.mjs unseal … --identity - (never through the session)`)
+  if (sealed.length) manual.push(`sealed credentials (${sealed.map(e => e.id).join(', ')}): unseal with the master key file the user names (host.mjs unseal --identity <file> for a docker member, secrets.mjs unseal --identity <file> here); the session never opens that file`)
   for (const s of secretsOf(r)) {
     if (s.path && sealed.some(e => e.path === absPath(s.path))) continue
     manual.push(`${s.name}: ${s.path ?? '(see note)'}, filled by ${s.by ?? 'the user'}${s.note ? ` (${s.note})` : ''}`)
