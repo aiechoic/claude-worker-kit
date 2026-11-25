@@ -9,6 +9,7 @@ H status
 ```
 
 - Docker must be reachable.
+- The compose project in use, the build directory (cloned yet? behind the remote?), and the download speed from the docker host for each `runtime.docker.probe` URL. A slow or refused download fails the build later: fix the proxy first.
 - The host credential directory (`runtime.docker.credDir`) must have the files the project's init expects. Only their names are shown.
 - Shared services the project needs (databases, networks) must already run. They are the project's business; check them with the commands its docs give, and do not start or stop them here.
 
@@ -21,8 +22,8 @@ H rebuild --yes         # after the user agrees to the plan
 
 The rebuild does five things:
 
-1. It tags the current image `<image>:pre-<stamp>`.
-2. It builds the image from `buildContext`. This can take a long time; run it in the background and say so.
+1. It tags the image the container runs (by image ID, not whatever `<image>` points at now) as `<image>:pre-<stamp>`.
+2. With `buildRepo`, it clones a missing build directory or fast-forwards a clean one that is behind (it stops on local changes). Then it builds the image. This can take a long time: run it in the background and say so. A line every minute shows it is still building.
 3. It stops the container and renames it `<container>-old`. Its volumes stay.
 4. It starts a new container under a new compose project `<composeProject>-<stamp>`. A new project name means new, empty volumes, so nothing is mounted from the old ones.
 5. It runs the project's init hook in the container. The init must end green. If it does not, see [rollback.md](rollback.md).
@@ -39,20 +40,20 @@ The rebuild record `~/.claude-worker-kit/<container>.json` (on the machine that 
 
 The rebuild then exits 10: the user logs in to Claude inside the new container 🖐 (`docker exec -it <container> bash`, run `claude`, log in, exit).
 
-**Note:** the new compose project name is the one to use from now on. The old name mounts the old volumes. Tell the user, and write it into the member's `ROLE.md` when you get there.
+The new compose project name is noted in `~/.claude-worker-kit/<container>.project`; `H up` and `H down` use it (the old name would mount the old volumes). `H status` shows it.
 
 ## 3. Continue inside
 
 1. Copy the kit into the container: `H copy-kit --yes`. This gives `/opt/worker-kit/scripts/…`.
-2. Run the inside steps ([worker-inside.md](worker-inside.md)) from here with `H exec -- "<command>"`, using `KIT=/opt/worker-kit`.
-3. Commands that need a terminal are for the user, through `docker exec -it <container> bash` 🖐. These are pasting a secret and starting `team-claude`.
+2. Run the inside steps ([worker-inside.md](worker-inside.md)) from here with `H exec -- "<command>"`, using `KIT=/opt/worker-kit`. The command line goes into the container as a script file, so `$`, quotes and `{}` arrive as written; for anything longer, write a script and use `H exec --file <script>`.
+3. Only two things need a terminal of the user's, through `docker exec -it <container> bash` 🖐 (on Windows straight from PowerShell; no `wsl` in front): logging in to Claude after the rebuild, and starting `team-claude` at the end.
 
 ## 4. After acceptance
 
 Once the worker has passed acceptance ([verify.md](verify.md)) and the leader has confirmed:
 
 ```
-H finish --yes
+H finish
 ```
 
-This forgets the rebuild record. `<container>-old`, its volumes and the `pre-` image tag stay until the user decides to remove them. Suggest keeping them for a week.
+This only deletes the record file `~/.claude-worker-kit/<container>.json`; it takes no `--yes`. `<container>-old`, its volumes and the `pre-` image tag stay until the user decides to remove them. Suggest keeping them for a week.

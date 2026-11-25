@@ -5,7 +5,7 @@ A member's credentials can travel in its private state repo, encrypted with the 
 - **Public key** (`age1…`): in the team file as `secretsRecipient`. Anyone who has it can seal, so members seal their own credentials at `save`.
 - **Master key** (`AGE-SECRET-KEY-1…`): the matching age identity. Only the user keeps it, for example in a password manager. ⛔ It never goes into a repo, a log, a chat or the session.
 - **Which credentials**: `secrets` entries with `"sealed": true` and a `path`. Each one is kept as `<member dir>/secrets/<id>.age`; `id` defaults to the file name of `path`, without leading dots. To seal the bot's App Secret, list it as `{ "name": …, "path": "{channel.appSecretFile}", "sealed": true }`.
-- **Not sealed**: deploy keys. A lost deploy key is replaced: generate a new one and send the `.pub` line to the leader. Entries with only a `check` (a login such as `gh auth status`) cannot be sealed either.
+- **Not sealed**: deploy keys. A lost one is replaced: `repos.mjs keys --yes` makes a new one and adds it with the user's gh login. Entries with only a `check` (a login such as `gh auth status`) cannot be sealed either.
 
 `A` below is `--role … [--n N] --team <team.json>`, as for every script.
 
@@ -48,18 +48,13 @@ How seal decides, by content and never by file times:
 
 ## Unseal on a new machine (restore)
 
-After `state.mjs restore`, which lists the sealed credentials it found, make sure age is there (`secrets.mjs age A`, see above). Then the user hands the master key over once, from a terminal of their own (not this session) 🖐:
+After `state.mjs restore`, which lists the sealed credentials it found, make sure age is there (`secrets.mjs age A`, see above). The master key is the file `keygen` wrote: one line that starts `AGE-SECRET-KEY-1`. The user keeps it (a password manager, a USB stick) and tells the session **where the file is**, best in the first request. ⛔ The session passes the path on and never opens the file:
 
-- Linux or a docker worker (`docker exec -it <container> bash` first):
-  ```
-  (read -rsp "master key: " k && printf '%s\n' "$k" | node "$KIT/scripts/secrets.mjs" unseal A --identity -); echo
-  ```
-- Windows, with the key copied from the password manager:
-  ```
-  Get-Clipboard | node "$env:KIT\scripts\secrets.mjs" unseal A --identity -
-  ```
-  Then clear the clipboard.
-- Or, if the user put the key in a file: `--identity <file>`. Delete the file afterwards.
+- Docker worker, from the host: `node "$KIT/scripts/host.mjs" unseal --n N --team … --identity <file>`. The script reads the file and pipes it into `secrets.mjs unseal` in the container, then runs `secrets.mjs status` there.
+- Native, here: `node "$KIT/scripts/secrets.mjs" unseal A --identity <file>`.
+- A user who would rather not keep it in a file can still pipe it in from a terminal of their own: `… unseal A --identity -` (on Windows `Get-Clipboard | node … unseal A --identity -`, then clear the clipboard).
+
+Then check what it printed: each sealed credential `written` or `already in place`. "no identity matched" means a different master key: ask for the right file.
 
 What `unseal` does:
 
@@ -68,7 +63,7 @@ What `unseal` does:
 - A different file already at a path is kept, and reported. `--force` replaces it with the sealed one.
 - Credentials that are not sealed in the repo are reported. Fill them by hand as before.
 
-The session only runs the follow-up checks (`channel.mjs check-secret`, `verify.mjs`). These check that files exist; they do not read them.
+Then the follow-up checks (`channel.mjs place`, which checks the App Secret file, and `verify.mjs`) only check that files exist; they do not read them.
 
 ## No sealed files
 

@@ -43,10 +43,12 @@ One JSON file per state repo, at the repo root. Example: `examples/team.json` in
 | field | meaning |
 | --- | --- |
 | `wsl` | `auto` (WSL on Windows), `true`, `false` |
-| `buildContext` | directory on the docker host that holds the Dockerfile and compose file (paths on the host; `~` is the host user's home) |
+| `buildContext` | directory on the docker host that holds the Dockerfile and compose file (paths on the host; `~` is the host user's home). Optional with `buildRepo`: then the clone lives at `~/.claude-worker-kit/build/<repo name>` on the machine that runs `host.mjs` |
+| `buildRepo` | optional `{ "url": …, "ref": "main" }`: the repo the build directory comes from. A missing build directory is cloned (with the user's gh login for a private repo); an existing one is compared with `ref`; `rebuild` fast-forwards a clean one and stops on local changes. Without it the build directory is used as it is |
+| `probe` | optional `[{ "name": …, "url": …, "minKBps": 200 }]`: `host.mjs status` downloads each URL for 15 s from the docker host and warns when it is slower than `minKBps` or refused (for example the apt mirror and the Claude Code download the image needs) |
 | `dockerfile`, `compose` | relative to `buildContext` |
-| `image` | image name; the previous one is tagged `<image>:pre-<stamp>` before a build |
-| `composeProject` | base compose project name; a rebuild appends a stamp so it gets new volumes |
+| `image` | image name; before a build, the image the container runs is tagged `<image>:pre-<stamp>` |
+| `composeProject` | base compose project name; a rebuild appends a stamp so it gets new volumes, and notes the project in use in `~/.claude-worker-kit/<container>.project` (`host.mjs up` / `down` use it) |
 | `container` | container name |
 | `env` | environment for `docker compose` (for example the worker number, the host credential root) |
 | `credDir` | host credential directory mounted read-only into the container (only its file names are checked) |
@@ -56,6 +58,24 @@ One JSON file per state repo, at the repo root. Example: `examples/team.json` in
 `runtime.mode` (`docker` | `native`) picks the runtime for a member. When it is not set, a member with `runtime.docker` is a docker member and one without it is native. This does not depend on which OS the script runs on.
 
 **Managing docker workers from a Windows host.** Set `"runtime": { "mode": "docker" }` on `roles.worker` and `"mode": "native"` on the members that run natively. The default above already does this, but being explicit keeps a member from being treated as native when its `runtime.docker` is missing or misspelled.
+
+## ROLE.md: repositories
+
+A member's other repos (tools, sources it pushes to) are listed in its `ROLE.md` under a fixed heading, so a restore brings them back with `repos.mjs keys` and `repos.mjs clone`:
+
+```
+## Repositories
+
+| repo | clone | key | host | access |
+| --- | --- | --- | --- | --- |
+| git@github.com:owner/tool.git | /work/src/tool | /work/.ssh/tool | gh-tool | write |
+| https://github.com/owner/docs.git | /work/src/docs | /work/.ssh/docs |  | read |
+```
+
+- `repo`: the git URL. `clone`: where it is cloned. `key`: the deploy key's private file (`.pub` next to it), made in the member when missing.
+- `host`: an ssh `Host` alias; `repos.mjs clone` writes a block for it into `~/.ssh/config` (a `Host` the user wrote by hand is left alone) and clones through it. Empty: the clone gets `core.sshCommand` with the key instead.
+- `access`: `write` (default) or `read`, for the deploy key.
+- The state repo is not listed here: it is `stateRepo` / `deployKey` in the team file.
 
 ## What does not go into the team file
 

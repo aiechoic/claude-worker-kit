@@ -48,7 +48,11 @@
       "runtime": {
         "docker": {
           "wsl": "auto",
-          "buildContext": "~/example-infra",
+          "buildRepo": { "url": "git@github.com:example-org/example-infra.git", "ref": "main" },
+          "probe": [
+            { "name": "apt mirror", "url": "https://apt-mirror.example/debian/dists/stable/Release" },
+            { "name": "Claude Code download", "url": "https://claude.ai/install.sh" }
+          ],
           "dockerfile": "infra/worker/Dockerfile",
           "image": "example-worker",
           "compose": "infra/worker/compose.yml",

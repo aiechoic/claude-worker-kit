@@ -33,4 +33,4 @@
    - Start the container: `host.mjs rebuild --n N` works for a first start too, because there is simply no old container to set aside.
    - Then continue with [worker-inside.md](worker-inside.md).
 3. **Native worker**: continue with [worker-native.md](worker-native.md).
-4. **The worker's deploy key**: when the worker sends its public key, the leader runs `add-worker.mjs` ([leader.md](leader.md#bring-a-worker-in)).
+4. **The worker's deploy keys**: `repos.mjs keys --yes` on the worker's host adds them with the user's gh login; the leader runs `add-worker.mjs` to allow the worker's bot ([leader.md](leader.md#bring-a-worker-in)).

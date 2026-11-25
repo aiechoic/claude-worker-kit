@@ -25,10 +25,11 @@ What is different from a docker worker:
 ## Steps
 
 1. **Work directory**: make the directory (`workDir`) and start Claude Code there. For a rebuild, use a new directory and keep the old one.
-2. **State repo**: do step 1 of [worker-inside.md](worker-inside.md), with the same commands and Windows paths. `ssh-keygen` comes with Windows' OpenSSH client. For sealed credentials the user runs the Windows command in [secrets.md](secrets.md#unseal-on-a-new-machine-restore) from a separate PowerShell window 🖐, opened after age is installed (the session installs it with winget: [secrets.md](secrets.md#install-age)).
-3. **Feishu**: do step 2 of [worker-inside.md](worker-inside.md). When `check-secret` exits 10, the user writes the App Secret from a separate PowerShell window with the command the script printed 🖐.
-4. **Accept**: run `verify.mjs A`, then `state.mjs save A`.
-5. **Start**: the user opens a new terminal in the work directory and runs `team-claude` 🖐. `channel.mjs install` installed `team-claude.cmd` into npm's global bin.
+2. **State repo**: do step 1 of [worker-inside.md](worker-inside.md) here, with Windows paths: `repos.mjs keys A --state-only --yes` (keys made here with Windows' OpenSSH `ssh-keygen`, added with the user's gh), `state.mjs clone`, `state.mjs restore`. Sealed credentials: `secrets.mjs unseal A --identity <the master key file the user named>` ⛔ without opening it (age: the session installs it with winget, [secrets.md](secrets.md#install-age)).
+3. **Repos in `ROLE.md`**: `repos.mjs keys A --yes`, then `repos.mjs clone A --yes`.
+4. **Feishu**: do step 3 of [worker-inside.md](worker-inside.md). When `place` exits 10 (the App Secret is not sealed), the user writes it from a separate PowerShell window with the command the script printed 🖐.
+5. **Accept**: run `verify.mjs A`, then `state.mjs save A`.
+6. **Start**: the user opens a new terminal in the work directory and runs `team-claude` 🖐. `channel.mjs install` installed `team-claude.cmd` into npm's global bin.
 
 ## Rollback
 

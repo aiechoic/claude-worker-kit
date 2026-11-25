@@ -2,17 +2,19 @@
 /**
  * Leader side of bringing a worker in (run in the leader's session).
  *
- *   node add-worker.mjs --n N --pubkey <file | - | "ssh-ed25519 AAAA… comment"> --team <workers' team.json> [--leader-team <leader's team.json>] [--dry-run]
+ *   node add-worker.mjs --n N [--pubkey <file | - | "ssh-ed25519 AAAA… comment">] --team <workers' team.json> [--leader-team <leader's team.json>] [--dry-run]
  *
  * The workers' team file gives members.<N>; the leader's settings come from --leader-team (default: the same file).
  *
- * 1. adds the worker's public key as a writable deploy key on the workers' state repo (gh api)
+ * 1. with --pubkey only: adds the worker's public key as a writable deploy key on the workers' state repo (gh api);
+ *    normally the worker's side adds its own keys with the user's gh login (repos.mjs keys)
  * 2. adds the worker's bot (members.<N>.bot.appId) to the leader's channel allow list, as "worker-N"
  * 3. checks the worker's work chat (members.<N>.chats.work) exists and the leader's bot is in it
  * Needs: gh logged in with admin rights on the state repo; the leader's lark-cli profile.
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { addDeployKey, needGh, repoSlug } from './lib/gh.mjs'
 import { die, findTeamFile, info, isWin, loadTeam, needUser, ok, parseArgs, resolveRole, run, warn } from './lib/team.mjs'
 
 const args = parseArgs(process.argv.slice(2))
@@ -23,19 +25,12 @@ const team = loadTeam(teamFile)
 const leaderTeamFile = typeof args['leader-team'] === 'string' ? findTeamFile({ team: args['leader-team'] }) : teamFile
 const leader = resolveRole(leaderTeamFile === teamFile ? team : loadTeam(leaderTeamFile), 'leader')
 const w = resolveRole(team, 'worker', n)
-const GH = isWin ? 'gh.exe' : 'gh'
 const LARK = isWin ? 'lark-cli.cmd' : 'lark-cli'
 const HERE = import.meta.dirname
 
-function repoSlug(url) {
-  const m = /github\.com[:/]([^/]+)\/(.+?)(\.git)?$/.exec(url ?? '')
-  if (!m) die(`cannot read owner/repo from stateRepo ${url}`)
-  return `${m[1]}/${m[2]}`
-}
-
 function pubkey() {
   const p = args.pubkey
-  if (!p || p === true) die('pass --pubkey <file | - | key line>')
+  if (p === true) die('pass --pubkey <file | - | key line>')
   const text = p === '-' ? readFileSync(0, 'utf8') : /^ssh-/.test(p) ? p : readFileSync(p, 'utf8')
   const line = text.trim().split('\n')[0].trim()
   if (!/^ssh-(ed25519|rsa) [A-Za-z0-9+/=]+( .*)?$/.test(line)) die('that is not a public key line (ssh-ed25519 AAAA… comment)')
@@ -43,24 +38,16 @@ function pubkey() {
   return line
 }
 
-// 1. deploy key
-const slug = repoSlug(w.stateRepo)
-const key = pubkey()
-const body = key.split(' ').slice(0, 2).join(' ')
-const auth = run(GH, ['auth', 'status'], { capture: true, quiet: true })
-if (auth.status === 127) needUser(['Install the GitHub CLI (gh) on this machine.'])
-if (auth.status !== 0) needUser(['Log in to GitHub: gh auth login (an account with admin rights on the state repo).'])
-const list = run(GH, ['api', `repos/${slug}/keys`, '--paginate'], { capture: true, quiet: true })
-if (list.status !== 0) die(`cannot list deploy keys of ${slug} (admin rights?): ${list.stderr.trim()}`)
-const have = JSON.parse(list.stdout || '[]').find(k => k.key.trim() === body)
-if (have) ok(`deploy key already on ${slug}: "${have.title}" ${have.read_only ? '(read-only!)' : '(writable)'}`)
-else {
-  const title = `worker-${n}-state`
-  const res = run(GH, ['api', `repos/${slug}/keys`, '-f', `title=${title}`, '-f', `key=${key}`, '-F', 'read_only=false'], { dry, capture: true })
-  if (res.status !== 0) die(`adding the deploy key failed: ${res.stderr.trim()}`)
-  ok(`deploy key "${title}" ${dry ? 'would be added' : 'added'} to ${slug} (writable)`)
-}
-if (have?.read_only) warn('that key is read-only: delete it in the repo settings and run again')
+// 1. deploy key, only when the worker's side could not add it (normally repos.mjs keys does, with the user's gh)
+if (args.pubkey) {
+  const slug = repoSlug(w.stateRepo)
+  const gh = needGh('adding the worker\'s deploy key')
+  const res = addDeployKey(gh, slug, pubkey(), { title: `worker-${n}-state`, dry })
+  if (res.error) die(res.error)
+  if (res.added) ok(`deploy key "${res.title}" ${dry ? 'would be added' : 'added'} to ${slug} (writable)`)
+  else ok(`deploy key already on ${slug}: "${res.title}" ${res.readOnly ? '(read-only!)' : '(writable)'}`)
+  if (res.readOnly) warn('that key is read-only: delete it in the repo settings and run again')
+} else info('no --pubkey: the worker adds its own deploy keys (repos.mjs keys)')
 
 // 2. leader's channel allow list
 const appId = w.bot?.appId

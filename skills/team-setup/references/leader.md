@@ -29,7 +29,7 @@ S restore
 - The script links (Linux) or copies (Windows) the memory directory.
 - It adds `@…/ROLE.md` to the manual.
 - It lists the credentials still to fill, and the sealed ones it found.
-- If there are sealed credentials, first make sure age is installed (`secrets.mjs age --role leader --team …`; on exit 11 run the printed install command yourself, [secrets.md](secrets.md#install-age)). Then the user unseals them with the master key, from a terminal of their own 🖐 ([secrets.md](secrets.md#unseal-on-a-new-machine-restore)). ⛔ Not through the session.
+- If there are sealed credentials, first make sure age is installed (`secrets.mjs age --role leader --team …`; on exit 11 run the printed install command yourself, [secrets.md](secrets.md#install-age)). Then unseal with the master key file the user names: `secrets.mjs unseal --role leader --team … --identity <file>` ⛔ without opening that file. The user may also pipe it in with the master key, from a terminal of their own 🖐 ([secrets.md](secrets.md#unseal-on-a-new-machine-restore)). ⛔ Not through the session.
 - Read `session-state.md` afterwards.
 
 ## 4. GitHub, lark-cli, channel
@@ -58,18 +58,18 @@ The user then starts the leader with `team-claude` in the work directory 🖐.
 
 ## Bring a worker in
 
-The worker sends its state-repo public key: one line, `ssh-ed25519 AAAA… worker-N-…`. Public keys are fine to pass around; private keys never are.
+The worker's deploy keys are added on its own side, with the user's gh login (`repos.mjs keys`). The leader only lets the worker in:
 
 ```
-node "$KIT/scripts/add-worker.mjs" --n N --pubkey "<the line>" --team <the workers' team.json> --leader-team <the leader's team.json>
+node "$KIT/scripts/add-worker.mjs" --n N --team <the workers' team.json> --leader-team <the leader's team.json>
 ```
 
-This does three things:
+This does up to three things:
 
-1. It adds a writable deploy key on the workers' state repo (`gh api repos/<owner>/<repo>/keys`). An existing key is reported, not added twice.
+1. Only with `--pubkey "<ssh-ed25519 AAAA… line>"` (a worker set up without gh on its side): it adds that key as a writable deploy key on the workers' state repo. An existing key is reported, not added twice.
 2. It adds the worker's bot `members.N.bot.appId` to the leader's channel allow list (live and saved) as `worker-N`. Restart the leader's channel so the change applies: `node <channel checkout>/bin/restart.mjs`.
 3. It checks the work chat `members.N.chats.work` exists and the leader's bot is in it. If the chat is missing, the user creates it, adds both bots, and puts its id into the team file 🖐.
 
-Tell the worker "deploy key added". The worker then clones its state repo.
+Tell the worker it is let in (and "deploy key added" when you added one).
 
 A new worker also needs a Feishu bot. The user creates the app on the Feishu open platform 🖐: enable the bot, long-connection events `im.message.receive_v1` and `im.message.recalled_v1`, message permissions, and publish it. Put its app id into `members.N.bot.appId` and `save`.

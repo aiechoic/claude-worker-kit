@@ -20,11 +20,12 @@ Everything project-specific comes from the project's **team file** (`team.json`,
 | script | does |
 | --- | --- |
 | `state.mjs` | `clone` (before a team file exists), `restore`, `save` (seals changed credentials first), `lock` / `release` (leader), `status` |
-| `secrets.mjs` | `status` (names only), `seal`, `unseal` (master key from the user, once), `keygen` (a new master key) |
-| `channel.mjs` | `install` (channel repo + `team-claude`), `launcher` (only `team-claude`; stops if it points elsewhere, `--replace`), `place` (saved config → live), `capture` (portable fields → state repo), `allow`, `doctor`, `show` |
+| `secrets.mjs` | `status` (names only), `seal`, `unseal --identity <file>` (the master key file the user names), `age` (is age installed), `keygen` (a new master key) |
+| `repos.mjs` | `keys` (makes deploy keys in the member and adds them to GitHub with the user's gh login), `clone` (ssh Host blocks and clones of the repos in `ROLE.md`), `list` |
+| `channel.mjs` | `install` (channel repo + `team-claude`), `launcher` (only `team-claude`; stops if it points elsewhere, `--replace`), `place` (saved config → live, then the channel's `setup.mjs` writes `mcp.json`, then the App Secret file is checked), `capture` (portable fields → state repo), `allow`, `doctor`, `show` |
 | `lark.mjs` | `check`, `add` (secret piped from its file), `ping` (reads the work chat) |
-| `host.mjs` | docker host: `status`, `rebuild`, `rollback`, `finish`, `copy-kit`, `exec` (plans only, unless `--yes`) |
-| `add-worker.mjs` | leader: deploy key for a worker, allow its bot, check its chat |
+| `host.mjs` | docker host: `status` (also the build directory and download speed), `rebuild`, `rollback`, `finish` (deletes the record file only), `up` / `down`, `copy-kit`, `exec` (a command line or `--file`, copied in), `unseal --identity <file>` (plans only, unless `--yes`) |
+| `add-worker.mjs` | leader: allow a worker's bot, check its chat (and a deploy key, when the leader adds it) |
 | `verify.mjs` | acceptance checks for one member |
 
 Every script takes `--role leader|worker`, `--n <N>` for workers, `--team <team.json>`.
@@ -32,10 +33,10 @@ Every script takes `--role leader|worker`, `--n <N>` for workers, `--team <team.
 ## Rules for the whole run
 
 - ⛔ **Never read, print, log or paste a credential**: App Secrets, private keys, tokens, API keys, database passwords. Check only that a file exists and is non-empty. Secrets move file → program (stdin), never through the conversation.
-- ⛔ **The master key** (the age identity that unseals the team's credentials, `AGE-SECRET-KEY-1…`) never reaches the session. The user pipes it into `secrets.mjs unseal` in a terminal of their own ([references/secrets.md](references/secrets.md)). If they paste it into the conversation, tell them it is exposed and that the team must make a new master key and seal again.
-- **Steps for the user.** A script that exits with code **10** printed a "🖐 This step needs you" block. Stop, show the user those lines, and wait until they say it is done. Then run the same step again. These steps are always for the user: logging in to Claude, `gh auth login`, handing over the master key, pasting an App Secret, creating a Feishu bot or chat, and forwarding a public key to the leader.
-- **Steps for the session.** A script that exits with code **11** printed a "🔧" block with commands to run (installing age). They are not for the user: run the one that fits where you are (this machine, or the docker host for a docker member), then run the same step again. If it fails, show the error to the user.
-- **Plan, then do.** On the host, run `host.mjs` without `--yes` first, show the plan, and get the user's go-ahead before `--yes`. Do the same for anything that stops, renames or removes a container.
+- ⛔ **The master key** (the age identity that unseals the team's credentials, a file whose line starts `AGE-SECRET-KEY-1…`) never reaches the session. The user names **the file** it is in; pass that path to `host.mjs unseal --identity <file>` (docker member) or `secrets.mjs unseal --identity <file>` (here). ⛔ Never open, read, `cat`, copy or search that file yourself; the script reads it. If the user pastes the key into the conversation, tell them it is exposed and that the team must make a new master key and seal again ([references/secrets.md](references/secrets.md)).
+- **Steps for the user.** A script that exits with code **10** printed a "🖐 This step needs you" block. Stop, show the user those lines, and wait until they say it is done. Then run the same step again. On a restore or rebuild there are only three: naming the master key file (best in the first request), `! gh auth login` in this session, and logging in to Claude inside the new container. For a brand-new member also: creating a Feishu bot or chat, and its App Secret when it is not sealed. Deploy keys are not a user step: `repos.mjs keys` adds them with the user's gh login.
+- **Steps for the session.** A script that exits with code **11** printed a "🔧" block with commands to run (installing age or the GitHub CLI). They are not for the user: run the one that fits where you are (this machine, or the docker host for a docker member), then run the same step again. If it fails, show the error to the user.
+- **Plan, then do.** On the host, run `host.mjs` without `--yes` first, show the plan, and get the user's go-ahead before `--yes`. Do the same for anything that stops, renames or removes a container. `host.mjs finish` is not destructive: it only deletes the rebuild record file and takes no `--yes`.
 - **Only this member.** Do not touch other members' containers, volumes, chats or state directories.
 - **Keep the old one.** A rebuild keeps the old container (`<name>-old`), its volumes and the old image tag until the user decides. Roll back at the first step that cannot be fixed. See [references/rollback.md](references/rollback.md).
 - **Write as you go.** After each step, record one line: what ran and what came out. Anything stuck, done by hand, or unclear goes into the run log you hand back at the end. Do not work around a problem silently.
@@ -55,16 +56,16 @@ Ask the user (or read it from the request) three things:
 | **rebuild** | a docker worker gets a new image and fresh volumes; the old container is kept | [references/worker-host.md](references/worker-host.md) → [references/worker-inside.md](references/worker-inside.md) |
 | **rollback** | a rebuild or restore failed | [references/rollback.md](references/rollback.md) |
 | **accept** | after any of the above, or "check that X is fine" | [references/verify.md](references/verify.md) |
-| **add worker** (leader side) | a worker sends its public key, or a new worker joins | [references/leader.md](references/leader.md#bring-a-worker-in) |
+| **add worker** (leader side) | a new worker joins: allow its bot, check its chat | [references/leader.md](references/leader.md#bring-a-worker-in) |
 
-Bring the leader up before its workers. Workers need the leader to add their deploy keys.
+Bring the leader up before its workers: the leader allows each worker's bot (`add-worker.mjs`).
 
 ## Getting the team file
 
 The team file is in the state repo, so you need the repo before you have the file:
 
-- **On a host with the user's GitHub access** (the docker host, or the leader's machine): clone the state repo with the user's own credentials, for example `gh repo clone <owner>/<repo>` after the user runs `gh auth login`. The team file is in that clone.
-- **Inside a member** (container or native work directory): run `state.mjs clone --repo <url> --to <stateClone> --key <deployKey>`. The script stops for the user if the deploy key does not exist yet. The user then generates it and forwards the `.pub` line to the leader.
+- **On a host with the user's GitHub access** (the docker host, or the leader's machine): clone the state repo with the user's own login: `gh repo clone <owner>/<repo>`. Without gh, install it yourself (`winget install --id GitHub.cli -e` / `apt-get install -y gh`); the user runs `! gh auth login`. The team file is in that clone.
+- **Inside a member** (container or native work directory): `repos.mjs keys --state-only --yes` from the machine with gh makes the deploy key in the member and adds it to the state repo, then `state.mjs clone --repo <url> --to <stateClone> --key <deployKey>`.
 - **No state repo at all**: see [references/new.md](references/new.md).
 
 ## Finish

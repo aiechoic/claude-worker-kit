@@ -13,7 +13,7 @@ The rollback does three things:
 
 1. It removes the new container: `docker rm -f <container>`.
 2. It renames `<container>-old` back and starts it. If the rebuild stopped between stopping the old container and renaming it, it starts that container again under its own name.
-3. It puts the old image back: `docker tag <image>:pre-<stamp> <image>`.
+3. It puts the old image back: `docker tag <image>:pre-<stamp> <image>` (the image the old container ran), and notes the old compose project again for `host.mjs up` / `down`.
 
 If the rebuild record says the rebuild stopped at the image tag or build, nothing was touched: rollback only removes the record (a new `rebuild --yes` does not need it either).
 
